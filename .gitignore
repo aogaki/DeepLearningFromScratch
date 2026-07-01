@@ -1,0 +1,9 @@
+# Rust
+/target/
+**/target/
+
+# macOS
+.DS_Store
+
+# Books (large binaries)
+/books/

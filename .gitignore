@@ -7,3 +7,6 @@
 
 # Books (large binaries)
 /books/
+
+# MNIST / datasets (re-downloadable, large)
+**/dataset/

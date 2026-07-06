@@ -4,3 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ndarray = "0.17.2"
+ndarray-npy = { version = "0.10.0", default-features = false }

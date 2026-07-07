@@ -1,15 +1,19 @@
+/// 本 3.2.4「シグモイド関数」
 pub fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
+/// 本 3.2.7「ReLU関数」
 pub fn relu(x: f32) -> f32 {
     x.max(0.0)
 }
 
+/// 本 3.5.1「恒等関数とソフトマックス関数」出力層の恒等関数
 pub fn identity_function(x: f32) -> f32 {
     x
 }
 
+/// 本 3.4.3「実装のまとめ」3層ニューラルネットワークの順方向伝播
 pub fn forward(x: ndarray::Array2<f32>) -> ndarray::Array2<f32> {
     use ndarray::Array2;
 
@@ -28,6 +32,7 @@ pub fn forward(x: ndarray::Array2<f32>) -> ndarray::Array2<f32> {
     a3.mapv(identity_function)
 }
 
+/// 本 3.5.2「ソフトマックス関数の実装上の注意」最大値を引くオーバーフロー対策つき
 pub fn softmax(x: ndarray::Array1<f32>) -> ndarray::Array1<f32> {
     let c = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let exp_x = x.mapv(|v| (v - c).exp());
@@ -35,6 +40,7 @@ pub fn softmax(x: ndarray::Array1<f32>) -> ndarray::Array1<f32> {
     exp_x / sum_exp_x
 }
 
+/// 本 3.6「手書き数字認識」学習済み重みを読み込む3層推論ネットワーク
 pub struct Network {
     w1: ndarray::Array2<f32>,
     b1: ndarray::Array1<f32>,
@@ -64,6 +70,7 @@ impl Network {
         }
     }
 
+    /// 本 3.6.2「ニューラルネットワークの推論処理」バッチ各行にソフトマックス
     pub fn predict(&self, x: ndarray::Array2<f32>) -> ndarray::Array2<f32> {
         let a1 = x.dot(&self.w1) + &self.b1;
         let z1 = a1.mapv(sigmoid);

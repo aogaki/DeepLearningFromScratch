@@ -1,12 +1,16 @@
-pub fn parse_idx_labels(bytes: &[u8]) -> ndarray::Array1<u8> {
+use ndarray::{Array1, Array2};
+
+/// 本 3.6.1「MNISTデータセット」ラベルIDXファイルのパース
+pub fn parse_idx_labels(bytes: &[u8]) -> Array1<u8> {
     let magic_number = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
     assert_eq!(magic_number, 2049, "Invalid IDX label file header");
     let num_items = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
     let labels = &bytes[8..8 + num_items];
-    ndarray::Array1::from_vec(labels.to_vec())
+    Array1::from_vec(labels.to_vec())
 }
 
-pub fn parse_idx_images(bytes: &[u8]) -> ndarray::Array2<f32> {
+/// 本 3.6.1「MNISTデータセット」画像IDXファイルのパース(0..1 に正規化)
+pub fn parse_idx_images(bytes: &[u8]) -> Array2<f32> {
     let magic_number = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
     assert_eq!(magic_number, 2051, "Invalid IDX image file header");
     let num_images = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
@@ -18,17 +22,28 @@ pub fn parse_idx_images(bytes: &[u8]) -> ndarray::Array2<f32> {
         .map(|&b| b as f32 / 255.0)
         .collect();
 
-    ndarray::Array2::from_shape_vec((num_images, image_size), images).unwrap()
+    Array2::from_shape_vec((num_images, image_size), images).unwrap()
 }
 
-pub fn load_images(path: &str) -> ndarray::Array2<f32> {
+/// 本 3.6.1「MNISTデータセット」画像ファイルを読み込む
+pub fn load_images(path: &str) -> Array2<f32> {
     let bytes = std::fs::read(path).expect("Failed to read image file");
     parse_idx_images(&bytes)
 }
 
-pub fn load_labels(path: &str) -> ndarray::Array1<u8> {
+/// 本 3.6.1「MNISTデータセット」ラベルファイルを読み込む
+pub fn load_labels(path: &str) -> Array1<u8> {
     let bytes = std::fs::read(path).expect("Failed to read label file");
     parse_idx_labels(&bytes)
+}
+
+/// 本 4.5.2 ミニバッチ学習用: ラベル番号を one-hot 表現 (rows, num_classes) に変換
+pub fn to_one_hot(labels: &[u8], num_classes: usize) -> Array2<f32> {
+    let mut one_hot = Array2::<f32>::zeros((labels.len(), num_classes));
+    for (i, &label) in labels.iter().enumerate() {
+        one_hot[[i, label as usize]] = 1.0;
+    }
+    one_hot
 }
 
 #[cfg(test)]
@@ -86,5 +101,25 @@ mod tests {
         assert_eq!(images.shape(), &[60000, 784]);
         assert_eq!(labels.len(), 60000);
         assert_eq!(labels[0], 5);
+    }
+
+    #[test]
+    fn to_one_hot_test() {
+        let labels = vec![0, 1, 2, 1];
+        let num_classes = 3;
+        let one_hot = to_one_hot(&labels, num_classes);
+        assert_eq!(one_hot.shape(), &[4, 3]);
+        assert_eq!(one_hot[[0, 0]], 1.0);
+        assert_eq!(one_hot[[0, 1]], 0.0);
+        assert_eq!(one_hot[[0, 2]], 0.0);
+        assert_eq!(one_hot[[1, 0]], 0.0);
+        assert_eq!(one_hot[[1, 1]], 1.0);
+        assert_eq!(one_hot[[1, 2]], 0.0);
+        assert_eq!(one_hot[[2, 0]], 0.0);
+        assert_eq!(one_hot[[2, 1]], 0.0);
+        assert_eq!(one_hot[[2, 2]], 1.0);
+        assert_eq!(one_hot[[3, 0]], 0.0);
+        assert_eq!(one_hot[[3, 1]], 1.0);
+        assert_eq!(one_hot[[3, 2]], 0.0);
     }
 }

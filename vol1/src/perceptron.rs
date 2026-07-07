@@ -1,24 +1,29 @@
+/// 本 2.3「パーセプトロンの実装」ANDゲート
 pub fn and_gate(x1: f32, x2: f32) -> f32 {
     let tmp = perceptron(&[x1, x2], &[0.5, 0.5], -0.7);
     step_function(tmp)
 }
 
+/// 本 2.3.3「重みとバイアスによる実装」NANDゲート
 pub fn nand_gate(x1: f32, x2: f32) -> f32 {
     let tmp = perceptron(&[x1, x2], &[-0.5, -0.5], 0.7);
     step_function(tmp)
 }
 
+/// 本 2.3.3「重みとバイアスによる実装」ORゲート
 pub fn or_gate(x1: f32, x2: f32) -> f32 {
     let tmp = perceptron(&[x1, x2], &[0.5, 0.5], -0.2);
     step_function(tmp)
 }
 
+/// 本 2.5.2「XORゲートの実装」多層パーセプトロン
 pub fn xor_gate(x1: f32, x2: f32) -> f32 {
     let s1 = nand_gate(x1, x2);
     let s2 = or_gate(x1, x2);
     and_gate(s1, s2)
 }
 
+/// 本 2.3.2「重みとバイアスの導入」パーセプトロンの重み付き和
 pub fn perceptron(x_vec: &[f32], w_vec: &[f32], b: f32) -> f32 {
     x_vec
         .iter()
@@ -28,6 +33,7 @@ pub fn perceptron(x_vec: &[f32], w_vec: &[f32], b: f32) -> f32 {
         + b
 }
 
+/// 本 2.1「パーセプトロンとは」の発火判定(ステップ関数)
 pub fn step_function(x: f32) -> f32 {
     if x <= 0.0 { 0.0 } else { 1.0 }
 }

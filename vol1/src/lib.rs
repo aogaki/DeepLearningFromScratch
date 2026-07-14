@@ -3,6 +3,7 @@ pub mod layers;
 pub mod loss;
 pub mod mnist;
 pub mod network;
+pub mod optimizer;
 pub mod perceptron;
 pub mod two_layer_net;
 pub mod two_layer_net_backprop;

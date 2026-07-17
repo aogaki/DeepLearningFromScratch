@@ -49,7 +49,6 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
 - `println!` を表示したいテスト: `cargo test -- --nocapture`
 
 ## 現在地(詳細な経過は Auto Memory に任せる)
-- **vol1**: 2章 パーセプトロン / 3章(活性化関数・行列積・3層順伝播・softmax・
-  3.6 MNIST 推論、正解率 93.52%)まで完了。モジュール分割(perceptron/network/mnist)と
-  ワークスペース化も済み。次は 4章「ニューラルネットワークの学習」。
+- **vol1**: 7章 完了(SimpleConvNet 98.75%、7.6 フィルタ可視化も実施)。
+  次は 8.1 ディープ CNN → wgpu 導入。
 - vol2〜vol5: 未着手。

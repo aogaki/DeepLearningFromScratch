@@ -1,27 +1,27 @@
-use ndarray::Array2;
+use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 
 /// 本 6.1「パラメータの更新」最適化手法の共通インターフェース。
 /// パラメータは所有せず、毎回 &mut で借りて更新する(W の本体は各レイヤが持つ)。
 /// &mut self なのは Momentum の v など「パラメータごとの履歴」を自身が抱えるため。
 /// 状態は 1 パラメータ専用 —— W ごとに別インスタンスを作ること(v/h/m の混線防止)
+/// 本 7.5 「CNNの実装」では次元がまちまちのものに Optimizer を適用するため、ArrayViewMutD/ArrayViewD で抽象化している。
+
 pub trait Optimizer {
-    fn update(&mut self, param: &mut Array2<f32>, grad: &Array2<f32>);
+    fn update(&mut self, param: &mut ArrayViewMutD<f32>, grad: &ArrayViewD<f32>);
 }
 
 /// 本 6.1.2「SGD」W ← W − η·∂L/∂W。状態を持たない最も単純な更新則
 pub struct SGD {
     lr: f32,
 }
-
 impl SGD {
     pub fn new(lr: f32) -> Self {
         Self { lr }
     }
 }
-
 impl Optimizer for SGD {
-    fn update(&mut self, param: &mut Array2<f32>, grad: &Array2<f32>) {
-        param.scaled_add(-self.lr, grad);
+    fn update(&mut self, param: &mut ArrayViewMutD<f32>, grad: &ArrayViewD<f32>) {
+        param.scaled_add(-self.lr, &grad);
     }
 }
 
@@ -30,9 +30,8 @@ impl Optimizer for SGD {
 pub struct Momentum {
     lr: f32,
     momentum: f32,
-    velocity: Option<Array2<f32>>,
+    velocity: Option<ArrayD<f32>>,
 }
-
 impl Momentum {
     pub fn new(lr: f32, momentum: f32) -> Self {
         Self {
@@ -42,12 +41,11 @@ impl Momentum {
         }
     }
 }
-
 impl Optimizer for Momentum {
-    fn update(&mut self, param: &mut Array2<f32>, grad: &Array2<f32>) {
+    fn update(&mut self, param: &mut ArrayViewMutD<f32>, grad: &ArrayViewD<f32>) {
         let v = self
             .velocity
-            .get_or_insert_with(|| Array2::zeros(param.raw_dim()));
+            .get_or_insert_with(|| ArrayD::zeros(param.raw_dim()));
         *v = v.mapv(|x| x * self.momentum) - grad.mapv(|x| x * self.lr);
         *param += &*v;
     }
@@ -57,20 +55,18 @@ impl Optimizer for Momentum {
 /// 勾配2乗の累積 h で要素ごとに実効学習率を減衰(よく動いたパラメータほど小刻みに)
 pub struct AdaGrad {
     lr: f32,
-    h: Option<Array2<f32>>,
+    h: Option<ArrayD<f32>>,
 }
-
 impl AdaGrad {
     pub fn new(lr: f32) -> Self {
         Self { lr, h: None }
     }
 }
-
 impl Optimizer for AdaGrad {
-    fn update(&mut self, param: &mut Array2<f32>, grad: &Array2<f32>) {
-        let h = self.h.get_or_insert_with(|| Array2::zeros(param.raw_dim()));
+    fn update(&mut self, param: &mut ArrayViewMutD<f32>, grad: &ArrayViewD<f32>) {
+        let h = self.h.get_or_insert_with(|| ArrayD::zeros(param.raw_dim()));
         *h += &grad.mapv(|x| x * x);
-        *param -= &(grad / (h.mapv(|x| x.sqrt() + 1e-7)) * self.lr);
+        *param -= &(grad.to_owned() / (h.mapv(|x| x.sqrt() + 1e-7)) * self.lr);
     }
 }
 
@@ -82,10 +78,9 @@ pub struct Adam {
     beta1: f32,
     beta2: f32,
     iter: i32,
-    m: Option<Array2<f32>>,
-    v: Option<Array2<f32>>,
+    m: Option<ArrayD<f32>>,
+    v: Option<ArrayD<f32>>,
 }
-
 impl Adam {
     pub fn new(lr: f32) -> Self {
         Self {
@@ -98,12 +93,11 @@ impl Adam {
         }
     }
 }
-
 impl Optimizer for Adam {
-    fn update(&mut self, param: &mut Array2<f32>, grad: &Array2<f32>) {
+    fn update(&mut self, param: &mut ArrayViewMutD<f32>, grad: &ArrayViewD<f32>) {
         self.iter += 1;
-        let m = self.m.get_or_insert_with(|| Array2::zeros(param.raw_dim()));
-        let v = self.v.get_or_insert_with(|| Array2::zeros(param.raw_dim()));
+        let m = self.m.get_or_insert_with(|| ArrayD::zeros(param.raw_dim()));
+        let v = self.v.get_or_insert_with(|| ArrayD::zeros(param.raw_dim()));
 
         *m = m.mapv(|x| x * self.beta1) + grad.mapv(|x| x * (1.0 - self.beta1));
         *v = v.mapv(|x| x * self.beta2) + grad.mapv(|x| x * x * (1.0 - self.beta2));
@@ -118,8 +112,9 @@ impl Optimizer for Adam {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray::Array2;
 
-    fn approx_eq_array(a: &Array2<f32>, b: &Array2<f32>, epsilon: f32) -> bool {
+    fn approx_eq_array(a: &ArrayD<f32>, b: &ArrayD<f32>, epsilon: f32) -> bool {
         a.iter()
             .zip(b.iter())
             .all(|(&x, &y)| (x - y).abs() < epsilon)
@@ -128,12 +123,12 @@ mod tests {
     #[test]
     fn test_sgd_update() {
         let mut sgd = SGD::new(0.1);
-        let mut param = Array2::from_elem((2, 2), 1.0);
-        let grad = Array2::from_elem((2, 2), 0.5);
-        sgd.update(&mut param, &grad);
+        let mut param = Array2::from_elem((2, 2), 1.0).into_dyn();
+        let grad = Array2::from_elem((2, 2), 0.5).into_dyn();
+        sgd.update(&mut param.view_mut(), &grad.view());
         assert!(approx_eq_array(
             &param,
-            &Array2::from_elem((2, 2), 0.95),
+            &Array2::from_elem((2, 2), 0.95).into_dyn(),
             1e-6
         ));
     }
@@ -141,20 +136,20 @@ mod tests {
     #[test]
     fn test_momentum_update() {
         let mut momentum = Momentum::new(0.1, 0.9);
-        let mut param = Array2::from_elem((2, 2), 1.0);
-        let grad = Array2::from_elem((2, 2), 0.5);
+        let mut param = Array2::from_elem((2, 2), 1.0).into_dyn();
+        let grad = Array2::from_elem((2, 2), 0.5).into_dyn();
 
-        momentum.update(&mut param, &grad);
+        momentum.update(&mut param.view_mut(), &grad.view());
         assert!(approx_eq_array(
             &param,
-            &Array2::from_elem((2, 2), 0.95),
+            &Array2::from_elem((2, 2), 0.95).into_dyn(),
             1e-6
         ));
 
-        momentum.update(&mut param, &grad);
+        momentum.update(&mut param.view_mut(), &grad.view());
         assert!(approx_eq_array(
             &param,
-            &Array2::from_elem((2, 2), 0.855),
+            &Array2::from_elem((2, 2), 0.855).into_dyn(),
             1e-6
         ));
     }
@@ -162,20 +157,20 @@ mod tests {
     #[test]
     fn test_adagrad_update() {
         let mut adagrad = AdaGrad::new(0.1);
-        let mut param = Array2::from_elem((2, 2), 1.0);
-        let grad = Array2::from_elem((2, 2), 0.5);
+        let mut param = Array2::from_elem((2, 2), 1.0).into_dyn();
+        let grad = Array2::from_elem((2, 2), 0.5).into_dyn();
 
-        adagrad.update(&mut param, &grad);
+        adagrad.update(&mut param.view_mut(), &grad.view());
         assert!(approx_eq_array(
             &param,
-            &Array2::from_elem((2, 2), 0.9),
+            &Array2::from_elem((2, 2), 0.9).into_dyn(),
             1e-6
         ));
 
-        adagrad.update(&mut param, &grad);
+        adagrad.update(&mut param.view_mut(), &grad.view());
         assert!(approx_eq_array(
             &param,
-            &Array2::from_elem((2, 2), 0.829289),
+            &Array2::from_elem((2, 2), 0.829289).into_dyn(),
             1e-6
         ));
     }
@@ -183,20 +178,20 @@ mod tests {
     #[test]
     fn test_adam_update() {
         let mut adam = Adam::new(0.1);
-        let mut param = Array2::from_elem((2, 2), 1.0);
-        let grad = Array2::from_elem((2, 2), 0.5);
+        let mut param = Array2::from_elem((2, 2), 1.0).into_dyn();
+        let grad = Array2::from_elem((2, 2), 0.5).into_dyn();
 
-        adam.update(&mut param, &grad);
+        adam.update(&mut param.view_mut(), &grad.view());
         assert!(approx_eq_array(
             &param,
-            &Array2::from_elem((2, 2), 0.9), // Expected value after one update
+            &Array2::from_elem((2, 2), 0.9).into_dyn(), // Expected value after one update
             1e-6
         ));
 
-        adam.update(&mut param, &grad);
+        adam.update(&mut param.view_mut(), &grad.view());
         assert!(approx_eq_array(
             &param,
-            &Array2::from_elem((2, 2), 0.8), // Expected value after two updates
+            &Array2::from_elem((2, 2), 0.8).into_dyn(), // Expected value after two updates
             1e-6
         ));
     }

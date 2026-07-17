@@ -21,7 +21,6 @@ pub struct TwoLayerNetBackprop {
     opt_b2: Box<dyn Optimizer>,
     weight_decay_lambda: f32,
 }
-
 impl TwoLayerNetBackprop {
     /// make_opt: Optimizer のファクトリ(6.1)。中で4回呼び、パラメータごとに独立した
     /// インスタンス(=独立した v/h/m の履歴)を作る。Box は Clone できないためこの形。
@@ -181,13 +180,13 @@ impl TwoLayerNetBackprop {
     /// lr 等の更新則の詳細は Optimizer の内部事情になったため引数から消えた
     pub fn update(&mut self) {
         let (w, dw) = self.affine1.w_and_dw();
-        self.opt_w1.update(w, dw);
+        self.opt_w1.update(&mut w.view_mut().into_dyn(), &dw.view().into_dyn());
         let (b, db) = self.affine1.b_and_db();
-        self.opt_b1.update(b, db);
+        self.opt_b1.update(&mut b.view_mut().into_dyn(), &db.view().into_dyn());
         let (w, dw) = self.affine2.w_and_dw();
-        self.opt_w2.update(w, dw);
+        self.opt_w2.update(&mut w.view_mut().into_dyn(), &dw.view().into_dyn());
         let (b, db) = self.affine2.b_and_db();
-        self.opt_b2.update(b, db);
+        self.opt_b2.update(&mut b.view_mut().into_dyn(), &db.view().into_dyn());
     }
 
     /// 本 6.4.1 の過学習実験用に ch4 TwoLayerNet から移植。行ごとの argmax を突き合わせる。

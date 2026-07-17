@@ -1,3 +1,5 @@
+use ndarray::{Array, Dimension};
+
 /// 本 4.3.2「数値微分の例」中心差分による微分
 pub fn numerical_differentiation(f: impl Fn(f32) -> f32, x: f32) -> f32 {
     let h = 1e-4;
@@ -21,6 +23,27 @@ pub fn numerical_gradient(
         grad[i] = (f(x_plus_h.view()) - f(x_minus_h.view())) / (2.0 * h);
     }
 
+    grad
+}
+
+/// 配列1つを要素ごとに中心差分する汎用ヘルパー(次元 D に非依存)
+pub fn numerical_gradient_over<D: Dimension>(
+    param: &Array<f32, D>,
+    mut f: impl FnMut(&Array<f32, D>) -> f32,
+) -> Array<f32, D> {
+    let h = 1e-4;
+    let mut grad = Array::<f32, D>::zeros(param.raw_dim());
+    let mut p = param.to_owned();
+
+    for i in 0..p.len() {
+        let orig = p.as_slice().unwrap()[i];
+        p.as_slice_mut().unwrap()[i] = orig + h;
+        let loss_plus = f(&p);
+        p.as_slice_mut().unwrap()[i] = orig - h;
+        let loss_minus = f(&p);
+        p.as_slice_mut().unwrap()[i] = orig;
+        grad.as_slice_mut().unwrap()[i] = (loss_plus - loss_minus) / (2.0 * h);
+    }
     grad
 }
 

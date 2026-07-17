@@ -1,6 +1,7 @@
+use crate::gradient::numerical_gradient_over;
 use crate::loss::batch_cross_entropy_error;
 use crate::network::{sigmoid, softmax};
-use ndarray::{Array, Array1, Array2, ArrayView2, Dimension};
+use ndarray::{Array1, Array2, ArrayView2};
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::StandardNormal;
 
@@ -74,39 +75,18 @@ impl TwoLayerNet {
         batch_cross_entropy_error(y.view(), t)
     }
 
-    /// 配列1つを要素ごとに中心差分する汎用ヘルパー(次元 D に非依存)
-    fn numerical_gradient_over<D: Dimension>(
-        param: &Array<f32, D>,
-        mut f: impl FnMut(&Array<f32, D>) -> f32,
-    ) -> Array<f32, D> {
-        let h = 1e-4;
-        let mut grad = Array::<f32, D>::zeros(param.raw_dim());
-        let mut p = param.to_owned();
-
-        for i in 0..p.len() {
-            let orig = p.as_slice().unwrap()[i];
-            p.as_slice_mut().unwrap()[i] = orig + h;
-            let loss_plus = f(&p);
-            p.as_slice_mut().unwrap()[i] = orig - h;
-            let loss_minus = f(&p);
-            p.as_slice_mut().unwrap()[i] = orig;
-            grad.as_slice_mut().unwrap()[i] = (loss_plus - loss_minus) / (2.0 * h);
-        }
-        grad
-    }
-
     /// 本 4.5.1 数値微分で全パラメータ(W1/b1/W2/b2)の勾配を求める
     pub fn numerical_gradient(&self, x: ArrayView2<f32>, t: ArrayView2<f32>) -> Gradients {
-        let w1 = Self::numerical_gradient_over(&self.w1, |w| {
+        let w1 = numerical_gradient_over(&self.w1, |w| {
             Self::forward_loss(w, &self.b1, &self.w2, &self.b2, x, t)
         });
-        let b1 = Self::numerical_gradient_over(&self.b1, |b| {
+        let b1 = numerical_gradient_over(&self.b1, |b| {
             Self::forward_loss(&self.w1, b, &self.w2, &self.b2, x, t)
         });
-        let w2 = Self::numerical_gradient_over(&self.w2, |w| {
+        let w2 = numerical_gradient_over(&self.w2, |w| {
             Self::forward_loss(&self.w1, &self.b1, w, &self.b2, x, t)
         });
-        let b2 = Self::numerical_gradient_over(&self.b2, |b| {
+        let b2 = numerical_gradient_over(&self.b2, |b| {
             Self::forward_loss(&self.w1, &self.b1, &self.w2, b, x, t)
         });
 

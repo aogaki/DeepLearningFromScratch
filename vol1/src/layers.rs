@@ -1,6 +1,6 @@
 use crate::loss::batch_cross_entropy_error;
 use crate::network::{sigmoid, softmax};
-use ndarray::Array2;
+use ndarray::{Array, Array2, Dimension, Ix2};
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Uniform;
 
@@ -39,26 +39,30 @@ impl AddLayer {
 }
 
 /// 本 5.5.1「ReLUレイヤ」x<=0 の位置を mask で覚え、forward/backward で堰き止める
-pub struct ReluLayer {
-    mask: Array2<bool>,
+/// 本 7.5 「CNNの実装」でいくつかの次元に対応するためジェネリクス化する
+pub struct ReluLayer<D: Dimension = Ix2> {
+    mask: Option<Array<bool, D>>,
 }
-impl ReluLayer {
+impl<D: Dimension> ReluLayer<D> {
     pub fn new() -> Self {
-        Self {
-            mask: Array2::default((0, 0)),
-        }
+        Self { mask: None }
     }
 
-    pub fn forward(&mut self, x: Array2<f32>) -> Array2<f32> {
-        self.mask = x.mapv(|v| v <= 0.0); // mask は先に保存
+    pub fn forward(&mut self, x: Array<f32, D>) -> Array<f32, D> {
+        self.mask = Some(x.mapv(|v| v <= 0.0)); // mask は先に保存
         x.mapv(|v| v.max(0.0)) // 0以下は0、あとは素通し
     }
 
-    pub fn backward(&self, dout: Array2<f32>) -> Array2<f32> {
-        let mut dx = dout.clone();
-        dx.iter_mut().zip(self.mask.iter()).for_each(|(d, &m)| {
+    pub fn backward(&self, dout: Array<f32, D>) -> Array<f32, D> {
+        let mut dx = dout;
+        let mask = self
+            .mask
+            .as_ref()
+            .expect("ReluLayer: forward must be called before backward");
+
+        dx.iter_mut().zip(mask.iter()).for_each(|(d, &m)| {
             if m {
-                *d = 0.0
+                *d = 0.0;
             }
         });
         dx

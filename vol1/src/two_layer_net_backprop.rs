@@ -65,7 +65,7 @@ impl TwoLayerNetBackprop {
     pub fn predict(&mut self, x: Array2<f32>, train_flag: bool) -> Array2<f32> {
         let out1 = self.affine1.forward(x);
         let out2 = self.bn.forward(out1);
-        let out3 = self.relu.forward(out2);
+        let out3 = self.relu.forward(out2.into_dyn()).into_dimensionality().unwrap();
         let out4 = self.dropout.forward(out3, train_flag);
         self.affine2.forward(out4)
     }
@@ -94,7 +94,7 @@ impl TwoLayerNetBackprop {
         let dout = self.last_layer.backward(1.0);
         let dout = self.affine2.backward(dout);
         let dout = self.dropout.backward(dout);
-        let dout = self.relu.backward(dout);
+        let dout = self.relu.backward(dout.into_dyn()).into_dimensionality().unwrap();
         let dout = self.bn.backward(dout);
         let _dout = self.affine1.backward(dout);
 

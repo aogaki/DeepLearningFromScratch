@@ -1,8 +1,14 @@
 use crate::loss::batch_cross_entropy_error;
 use crate::network::{sigmoid, softmax};
-use ndarray::{Array, Array2, Dimension, Ix2};
+use ndarray::{Array2, Array4, ArrayD, Ix2, Ix4};
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Uniform;
+
+/// 本 8.1 「ネットワークをより深く」でジェネリクス化するために ArrayD
+pub trait Layer {
+    fn forward(&mut self, x: ArrayD<f32>, train_flg: bool) -> ArrayD<f32>;
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32>;
+}
 
 /// 本 5.4.1「乗算レイヤの実装」forward で入力を保存し backward で入れ替えて掛ける
 pub struct MulLayer {
@@ -40,20 +46,21 @@ impl AddLayer {
 
 /// 本 5.5.1「ReLUレイヤ」x<=0 の位置を mask で覚え、forward/backward で堰き止める
 /// 本 7.5 「CNNの実装」でいくつかの次元に対応するためジェネリクス化する
-pub struct ReluLayer<D: Dimension = Ix2> {
-    mask: Option<Array<bool, D>>,
+/// 本 8.1 「ネットワークをより深く」で他もジェネリクス化するために ArrayD
+pub struct ReluLayer {
+    mask: Option<ArrayD<bool>>,
 }
-impl<D: Dimension> ReluLayer<D> {
+impl ReluLayer {
     pub fn new() -> Self {
         Self { mask: None }
     }
 
-    pub fn forward(&mut self, x: Array<f32, D>) -> Array<f32, D> {
+    pub fn forward(&mut self, x: ArrayD<f32>) -> ArrayD<f32> {
         self.mask = Some(x.mapv(|v| v <= 0.0)); // mask は先に保存
         x.mapv(|v| v.max(0.0)) // 0以下は0、あとは素通し
     }
 
-    pub fn backward(&self, dout: Array<f32, D>) -> Array<f32, D> {
+    pub fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
         let mut dx = dout;
         let mask = self
             .mask
@@ -66,6 +73,15 @@ impl<D: Dimension> ReluLayer<D> {
             }
         });
         dx
+    }
+}
+impl Layer for ReluLayer {
+    fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
+        self.forward(x)
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        self.backward(dout)
     }
 }
 
@@ -100,7 +116,7 @@ impl DropoutLayer {
         }
     }
 
-    pub fn backward(&self, dout: Array2<f32>) -> Array2<f32> {
+    pub fn backward(&mut self, dout: Array2<f32>) -> Array2<f32> {
         let mut dx = dout.clone();
         dx.iter_mut().zip(self.mask.iter()).for_each(|(d, &m)| {
             if !m {
@@ -108,6 +124,21 @@ impl DropoutLayer {
             }
         });
         dx
+    }
+}
+impl Layer for DropoutLayer {
+    fn forward(&mut self, x: ArrayD<f32>, train_flg: bool) -> ArrayD<f32> {
+        let x_2d = x
+            .into_dimensionality::<Ix2>()
+            .expect("DropoutLayer forward expects 2D input (N, features)");
+        self.forward(x_2d, train_flg).into_dyn()
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        let dout_2d = dout
+            .into_dimensionality::<Ix2>()
+            .expect("DropoutLayer backward expects 2D input (N, features)");
+        self.backward(dout_2d).into_dyn()
     }
 }
 
@@ -127,8 +158,23 @@ impl SigmoidLayer {
         self.out.clone()
     }
 
-    pub fn backward(&self, dout: Array2<f32>) -> Array2<f32> {
+    pub fn backward(&mut self, dout: Array2<f32>) -> Array2<f32> {
         dout * &self.out * &(1.0 - &self.out) // out * (1 - out) はシグモイド関数の微分
+    }
+}
+impl Layer for SigmoidLayer {
+    fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
+        let x_2d = x
+            .into_dimensionality::<Ix2>()
+            .expect("SigmoidLayer forward expects 2D input (N, features)");
+        self.forward(x_2d).into_dyn()
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        let dout_2d = dout
+            .into_dimensionality::<Ix2>()
+            .expect("SigmoidLayer backward expects 2D input (N, features)");
+        self.backward(dout_2d).into_dyn()
     }
 }
 
@@ -209,6 +255,21 @@ impl AffineLayer {
     /// loss 側の罰則項と必ず対で使う(片方だけだと勾配確認が崩れる)。バイアスには適用しない
     pub fn add_weight_decay(&mut self, weight_decay_lambda: f32) {
         self.dw.scaled_add(weight_decay_lambda, &self.w); // weight decay
+    }
+}
+impl Layer for AffineLayer {
+    fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
+        let x_2d = x
+            .into_dimensionality::<Ix2>()
+            .expect("AffineLayer forward expects 2D input (N, features)");
+        self.forward(x_2d).into_dyn()
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        let dout_2d = dout
+            .into_dimensionality::<Ix2>()
+            .expect("AffineLayer backward expects 2D input (N, features)");
+        self.backward(dout_2d).into_dyn()
     }
 }
 
@@ -318,9 +379,72 @@ impl BatchNormLayer {
         dxc - &dmu / self.batch_size as f32
     }
 }
+impl Layer for BatchNormLayer {
+    fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
+        let x_2d = x
+            .into_dimensionality::<Ix2>()
+            .expect("BatchNormLayer forward expects 2D input (N, features)");
+        self.forward(x_2d).into_dyn()
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        let dout_2d = dout
+            .into_dimensionality::<Ix2>()
+            .expect("BatchNormLayer backward expects 2D input (N, features)");
+        self.backward(dout_2d).into_dyn()
+    }
+}
+
+pub struct FlattenLayer {
+    input_shape: Option<Vec<usize>>,
+}
+impl FlattenLayer {
+    pub fn new() -> Self {
+        Self { input_shape: None }
+    }
+
+    pub fn forward(&mut self, x: Array4<f32>) -> Array2<f32> {
+        self.input_shape = Some(x.shape().to_vec());
+        let batch_size = x.shape()[0];
+        let flattened_size = x.len() / batch_size;
+        x.as_standard_layout()
+            .into_owned()
+            .into_shape_with_order((batch_size, flattened_size))
+            .unwrap()
+    }
+
+    pub fn backward(&mut self, dout: Array2<f32>) -> Array4<f32> {
+        self.input_shape
+            .as_ref()
+            .expect("Forward must be called before backward");
+        dout.into_shape_with_order((
+            self.input_shape.as_ref().unwrap()[0],
+            self.input_shape.as_ref().unwrap()[1],
+            self.input_shape.as_ref().unwrap()[2],
+            self.input_shape.as_ref().unwrap()[3],
+        ))
+        .unwrap()
+    }
+}
+impl Layer for FlattenLayer {
+    fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
+        let x_4d = x
+            .into_dimensionality::<Ix4>()
+            .expect("FlattenLayer forward expects 4D input (N,C,H,W)");
+        self.forward(x_4d).into_dyn()
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        let dout_2d = dout
+            .into_dimensionality::<Ix2>()
+            .expect("FlattenLayer backward expects 2D input (N, features)");
+        self.backward(dout_2d).into_dyn()
+    }
+}
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn approx_eq(a: f32, b: f32, epsilon: f32) -> bool {
@@ -328,6 +452,12 @@ mod tests {
     }
 
     fn approx_eq_array(a: &Array2<f32>, b: &Array2<f32>, epsilon: f32) -> bool {
+        a.iter()
+            .zip(b.iter())
+            .all(|(&x, &y)| (x - y).abs() < epsilon)
+    }
+
+    fn approx_eq_array_d(a: &ArrayD<f32>, b: &ArrayD<f32>, epsilon: f32) -> bool {
         a.iter()
             .zip(b.iter())
             .all(|(&x, &y)| (x - y).abs() < epsilon)
@@ -394,16 +524,16 @@ mod tests {
     fn relu_layer_test() {
         let mut relu_layer = ReluLayer::new();
         let x = Array2::from_shape_vec((2, 3), vec![-1.0, 2.0, -3.0, 4.0, -5.0, 6.0]).unwrap();
-        let out = relu_layer.forward(x.clone());
+        let out = relu_layer.forward(x.into_dyn());
         let expected_out =
             Array2::from_shape_vec((2, 3), vec![0.0, 2.0, 0.0, 4.0, 0.0, 6.0]).unwrap();
-        assert!(approx_eq_array(&out, &expected_out, 1e-6));
+        assert!(approx_eq_array_d(&out, &expected_out.into_dyn(), 1e-6));
 
         let dout = Array2::from_shape_vec((2, 3), vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]).unwrap();
-        let dx = relu_layer.backward(dout);
+        let dx = relu_layer.backward(dout.into_dyn());
         let expected_dx =
             Array2::from_shape_vec((2, 3), vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0]).unwrap();
-        assert!(approx_eq_array(&dx, &expected_dx, 1e-6));
+        assert!(approx_eq_array_d(&dx, &expected_dx.into_dyn(), 1e-6));
     }
 
     #[test]
@@ -568,5 +698,66 @@ mod tests {
                 .zip(forward_out.iter())
                 .all(|(&d, &o)| (o == 0.0 && d == 0.0) || (o != 0.0 && d == 1.0))
         );
+    }
+
+    use ndarray::array;
+    #[test]
+    fn flatten_layer_test() {
+        let mut flatten_layer = FlattenLayer::new();
+
+        // 1. サイズを小さくして手計算可能にする (N=2, C=2, H=1, W=2) 計8要素
+        // 元のレイアウト (N, C, H, W)
+        let x = array![
+            [
+                // N=0
+                [[1.0, 2.0]], // C=0
+                [[3.0, 4.0]]  // C=1
+            ],
+            [
+                // N=1
+                [[5.0, 6.0]], // C=0
+                [[7.0, 8.0]]  // C=1
+            ]
+        ];
+
+        // 2. 軸を [N, H, W, C] = [0, 2, 3, 1] に入れ替える
+        // 形状は (2, 1, 2, 2) になる
+        let x_permuted = x.permuted_axes([0, 2, 3, 1]);
+
+        // 3. forward の検証（実装と同じロジックは一切使わず、手計算の期待値を使う）
+        let out = flatten_layer.forward(x_permuted.clone());
+
+        // H=1なので省略して考えると、(N, W, C) の順に平坦化されるため、
+        // 1.0(C=0,W=0) → 3.0(C=1,W=0) → 2.0(C=0,W=1) → 4.0(C=1,W=1) の順になるはず。
+        let expected_out = array![
+            [1.0, 3.0, 2.0, 4.0], // N=0
+            [5.0, 7.0, 6.0, 8.0]  // N=1
+        ];
+        assert_eq!(out, expected_out);
+
+        // 4. backward の検証（forward から完全に独立させ、別の値を流し込む）
+        let dout = array![[10.0, 30.0, 20.0, 40.0], [50.0, 70.0, 60.0, 80.0]];
+        let dx = flatten_layer.backward(dout);
+
+        // dx は (2, 1, 2, 2) つまり [N, H, W, C] の順で復元されなければならない
+        let expected_dx = array![
+            [
+                // N=0
+                [
+                    // H=0
+                    [10.0, 30.0], // W=0 (C=0, 1)
+                    [20.0, 40.0]  // W=1 (C=0, 1)
+                ]
+            ],
+            [
+                // N=1
+                [
+                    // H=0
+                    [50.0, 70.0], // W=0
+                    [60.0, 80.0]  // W=1
+                ]
+            ]
+        ];
+        assert_eq!(dx, expected_dx);
     }
 }

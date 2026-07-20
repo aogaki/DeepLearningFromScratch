@@ -30,10 +30,10 @@ impl Default for ConvParams {
 pub struct SimpleConvNet {
     // Layers
     conv: ConvolutionLayer,
-    relu1: ReluLayer<ndarray::Ix4>,
+    relu1: ReluLayer,
     pool: PoolingLayer,
     affine1: AffineLayer,
-    relu2: ReluLayer<ndarray::Ix2>,
+    relu2: ReluLayer,
     affine2: AffineLayer,
     last_layer: SoftmaxWithLossLayer,
 
@@ -118,7 +118,11 @@ impl SimpleConvNet {
 
     pub fn predict(&mut self, x: &Array4<f32>) -> Array2<f32> {
         let out1 = self.conv.forward(x);
-        let out2 = self.relu1.forward(out1);
+        let out2 = self
+            .relu1
+            .forward(out1.into_dyn())
+            .into_dimensionality()
+            .unwrap();
         let out3 = self.pool.forward(&out2);
         let (n, c, h, w) = out3.dim();
         self.pool_output_shape = Some((n, c, h, w)); // store for backward pass
@@ -128,7 +132,11 @@ impl SimpleConvNet {
             .into_shape_with_order((n, c * h * w))
             .unwrap();
         let out4 = self.affine1.forward(out3_reshaped);
-        let out5 = self.relu2.forward(out4);
+        let out5 = self
+            .relu2
+            .forward(out4.into_dyn())
+            .into_dimensionality()
+            .unwrap();
         let out6 = self.affine2.forward(out5);
 
         out6
@@ -146,7 +154,11 @@ impl SimpleConvNet {
         // 逆伝播
         let dout = self.last_layer.backward(1.0);
         let dout = self.affine2.backward(dout);
-        let dout = self.relu2.backward(dout);
+        let dout = self
+            .relu2
+            .backward(dout.into_dyn())
+            .into_dimensionality()
+            .unwrap();
         let dout = self.affine1.backward(dout);
 
         let (batch_size, c, pool_h, pool_w) = self.pool_output_shape.unwrap();
@@ -155,7 +167,11 @@ impl SimpleConvNet {
             .unwrap();
 
         let dout = self.pool.backward(&dout_4d);
-        let dout = self.relu1.backward(dout);
+        let dout = self
+            .relu1
+            .backward(dout.into_dyn())
+            .into_dimensionality()
+            .unwrap();
         let _dout = self.conv.backward(&dout);
     }
 

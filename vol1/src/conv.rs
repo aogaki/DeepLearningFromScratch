@@ -1,5 +1,6 @@
+use crate::layers::Layer;
 use ndarray::linalg::Dot;
-use ndarray::{Array1, Array2, Array4, s};
+use ndarray::{Array1, Array2, Array4, ArrayD, Ix4, s};
 use std::ops::AddAssign;
 
 /// 本 7.4.2「im2colによる展開」(N,C,H,W) の入力からフィルタ適用領域を 1 行ずつ並べ、
@@ -203,6 +204,21 @@ impl ConvolutionLayer {
         )
     }
 }
+impl Layer for ConvolutionLayer {
+    fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
+        let x_4d = x
+            .into_dimensionality::<Ix4>()
+            .expect("ConvolutionLayer forward expects 4D input (N,C,H,W)");
+        self.forward(&x_4d).into_dyn()
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        let dout_4d = dout
+            .into_dimensionality::<Ix4>()
+            .expect("ConvolutionLayer backward expects 4D input (N,FN,OH,OW)");
+        self.backward(&dout_4d).into_dyn()
+    }
+}
 
 /// 本 7.4.4「Poolingレイヤの実装」im2col で窓を展開し、1 行 = 1 チャンネル分の 1 窓に
 /// reshape してから行ごとの max を取る。チャンネルごとに独立で、学習パラメータは持たない
@@ -294,6 +310,21 @@ impl PoolingLayer {
             self.stride,
             self.pad,
         )
+    }
+}
+impl Layer for PoolingLayer {
+    fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
+        let x_4d = x
+            .into_dimensionality::<Ix4>()
+            .expect("PoolingLayer forward expects 4D input (N,C,H,W)");
+        self.forward(&x_4d).into_dyn()
+    }
+
+    fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32> {
+        let dout_4d = dout
+            .into_dimensionality::<Ix4>()
+            .expect("PoolingLayer backward expects 4D input (N,C,H,W)");
+        self.backward(&dout_4d).into_dyn()
     }
 }
 

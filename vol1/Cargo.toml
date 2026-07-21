@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytemuck = "1.25.2"
 ndarray = "0.17.2"
 ndarray-npy = { version = "0.10.0", default-features = false }
 ndarray-rand = "0.16.0"
+pollster = "1.0.1"
 rand = "0.9"
 rayon = "1"
+wgpu = "30.0.0"

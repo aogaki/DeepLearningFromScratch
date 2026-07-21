@@ -1,5 +1,6 @@
 pub mod conv;
 pub mod deep_conv_net;
+pub mod gpu;
 pub mod gradient;
 pub mod layers;
 pub mod loss;

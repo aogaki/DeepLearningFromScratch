@@ -1,4 +1,5 @@
 use crate::layers::Layer;
+use crate::optimizer::Optimizer;
 use ndarray::linalg::Dot;
 use ndarray::{Array1, Array2, Array4, ArrayD, Ix4, s};
 use std::ops::AddAssign;
@@ -95,6 +96,9 @@ pub struct ConvolutionLayer {
     pad: usize,
     x_shape: Option<(usize, usize, usize, usize)>,
     col: Option<Array2<f32>>,
+
+    opt_w: Option<Box<dyn Optimizer>>,
+    opt_b: Option<Box<dyn Optimizer>>,
 }
 impl ConvolutionLayer {
     pub fn new(w: Array4<f32>, b: Array1<f32>, stride: usize, pad: usize) -> Self {
@@ -107,6 +111,8 @@ impl ConvolutionLayer {
             pad,
             x_shape: None,
             col: None,
+            opt_w: None,
+            opt_b: None,
         }
     }
 
@@ -203,6 +209,11 @@ impl ConvolutionLayer {
             self.db.as_ref().expect("backward must be called before db"),
         )
     }
+
+    pub fn set_optimizer(&mut self, opt_w: Box<dyn Optimizer>, opt_b: Box<dyn Optimizer>) {
+        self.opt_w = Some(opt_w);
+        self.opt_b = Some(opt_b);
+    }
 }
 impl Layer for ConvolutionLayer {
     fn forward(&mut self, x: ArrayD<f32>, _train_flg: bool) -> ArrayD<f32> {
@@ -217,6 +228,28 @@ impl Layer for ConvolutionLayer {
             .into_dimensionality::<Ix4>()
             .expect("ConvolutionLayer backward expects 4D input (N,FN,OH,OW)");
         self.backward(&dout_4d).into_dyn()
+    }
+
+    fn update(&mut self) {
+        let opt_w = self
+            .opt_w
+            .as_mut()
+            .expect("set_optimizer must be called before update");
+        let dw = self
+            .dw
+            .as_ref()
+            .expect("backward must be called before update");
+        opt_w.update(&mut self.w.view_mut().into_dyn(), &dw.view().into_dyn());
+
+        let opt_b = self
+            .opt_b
+            .as_mut()
+            .expect("set_optimizer must be called before update");
+        let db = self
+            .db
+            .as_ref()
+            .expect("backward must be called before update");
+        opt_b.update(&mut self.b.view_mut().into_dyn(), &db.view().into_dyn());
     }
 }
 

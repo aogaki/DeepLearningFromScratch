@@ -49,6 +49,6 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
 - `println!` を表示したいテスト: `cargo test -- --nocapture`
 
 ## 現在地(詳細な経過は Auto Memory に任せる)
-- **vol1**: 7章 完了(SimpleConvNet 98.75%、7.6 フィルタ可視化も実施)。
-  次は 8.1 ディープ CNN → wgpu 導入。
+- **vol1**: 8.1 完了(Layer トレイト + Vec<Box<dyn Layer>> の DeepConvNet、MNIST 99.32%)。
+  次は wgpu 導入(8.3.2 を読み物の伴走に。8.2〜8.5 は読むだけ)。
 - vol2〜vol5: 未着手。

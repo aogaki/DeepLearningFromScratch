@@ -1,4 +1,5 @@
 pub mod conv;
+pub mod deep_conv_net;
 pub mod gradient;
 pub mod layers;
 pub mod loss;

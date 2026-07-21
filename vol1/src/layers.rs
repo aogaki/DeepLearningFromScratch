@@ -1,5 +1,6 @@
 use crate::loss::batch_cross_entropy_error;
 use crate::network::{sigmoid, softmax};
+use crate::optimizer::Optimizer;
 use ndarray::{Array2, Array4, ArrayD, Ix2, Ix4};
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Uniform;
@@ -8,6 +9,9 @@ use ndarray_rand::rand_distr::Uniform;
 pub trait Layer {
     fn forward(&mut self, x: ArrayD<f32>, train_flg: bool) -> ArrayD<f32>;
     fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32>;
+    fn update(&mut self) {
+        // デフォルト実装は何もしない
+    }
 }
 
 /// 本 5.4.1「乗算レイヤの実装」forward で入力を保存し backward で入れ替えて掛ける
@@ -186,13 +190,24 @@ pub struct AffineLayer {
     x: Array2<f32>,
     dw: Array2<f32>,
     db: Array2<f32>,
+
+    opt_w: Option<Box<dyn Optimizer>>,
+    opt_b: Option<Box<dyn Optimizer>>,
 }
 impl AffineLayer {
     pub fn new(w: Array2<f32>, b: Array2<f32>) -> Self {
         let x = Array2::default((0, 0));
         let dw = Array2::zeros(w.raw_dim());
         let db = Array2::zeros(b.raw_dim());
-        Self { w, b, x, dw, db }
+        Self {
+            w,
+            b,
+            x,
+            dw,
+            db,
+            opt_w: None,
+            opt_b: None,
+        }
     }
 
     pub fn forward(&mut self, x: Array2<f32>) -> Array2<f32> {
@@ -245,16 +260,15 @@ impl AffineLayer {
         &mut self.b
     }
 
-    /// 本 5.7.4 保存済みの勾配 dW,dB で自身の W,B を更新する(SGD)
-    pub fn update(&mut self, lr: f32) {
-        self.w.scaled_add(-lr, &self.dw);
-        self.b.scaled_add(-lr, &self.db);
-    }
-
     /// 本 6.4.2「Weight decay」罰則項 (λ/2)ΣW² の微分 λW を dW に加算する。
     /// loss 側の罰則項と必ず対で使う(片方だけだと勾配確認が崩れる)。バイアスには適用しない
     pub fn add_weight_decay(&mut self, weight_decay_lambda: f32) {
         self.dw.scaled_add(weight_decay_lambda, &self.w); // weight decay
+    }
+
+    pub fn set_optimizer(&mut self, opt_w: Box<dyn Optimizer>, opt_b: Box<dyn Optimizer>) {
+        self.opt_w = Some(opt_w);
+        self.opt_b = Some(opt_b);
     }
 }
 impl Layer for AffineLayer {
@@ -270,6 +284,26 @@ impl Layer for AffineLayer {
             .into_dimensionality::<Ix2>()
             .expect("AffineLayer backward expects 2D input (N, features)");
         self.backward(dout_2d).into_dyn()
+    }
+
+    fn update(&mut self) {
+        let opt_w = self
+            .opt_w
+            .as_mut()
+            .expect("AffineLayer optimizer for weights is not set");
+        opt_w.update(
+            &mut self.w.view_mut().into_dyn(),
+            &self.dw.view().into_dyn(),
+        );
+
+        let opt_b = self
+            .opt_b
+            .as_mut()
+            .expect("AffineLayer optimizer for biases is not set");
+        opt_b.update(
+            &mut self.b.view_mut().into_dyn(),
+            &self.db.view().into_dyn(),
+        );
     }
 }
 

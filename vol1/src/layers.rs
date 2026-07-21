@@ -5,7 +5,11 @@ use ndarray::{Array2, Array4, ArrayD, Ix2, Ix4};
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Uniform;
 
-/// 本 8.1 「ネットワークをより深く」でジェネリクス化するために ArrayD
+/// 本 8.1「ネットワークをより深く」全層を `Vec<Box<dyn Layer>>` に並べるための共通トレイト。
+/// 境界は次元消去した ArrayD に統一(into_dyn/into_dimensionality はメタデータのみでゼロコピー)、
+/// train_flg を使うのは Dropout だけ。update() はデフォルト無処理で、
+/// パラメータを持つ層(Conv/Affine)だけがオーバーライドする。SoftmaxWithLoss は
+/// forward の型が異質(スカラー loss を返す)なので、本と同じく Vec には入れず last_layer 別枠
 pub trait Layer {
     fn forward(&mut self, x: ArrayD<f32>, train_flg: bool) -> ArrayD<f32>;
     fn backward(&mut self, dout: ArrayD<f32>) -> ArrayD<f32>;
@@ -429,6 +433,10 @@ impl Layer for BatchNormLayer {
     }
 }
 
+/// 本 8.1 pool 出力 (N,C,H,W) を Affine 用の (N, C·H·W) に潰す層。
+/// forward で入力の形を保存し backward で 4D に復元する(SimpleConvNet では
+/// net 側にあった pool_output_shape の責務を層に移したもの)。Python 版の本には
+/// 存在しない層(本の Affine は 4D 入力を内部で reshape するが、それは多重責務とみて分離)
 pub struct FlattenLayer {
     input_shape: Option<Vec<usize>>,
 }

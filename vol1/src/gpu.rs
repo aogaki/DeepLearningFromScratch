@@ -1,4 +1,4 @@
-use ndarray::Array2;
+use ndarray::{Array2, Array4};
 use wgpu::{Device, Queue, util::DeviceExt};
 
 const DOUBLE_SHADER: &str = r#"
@@ -19,12 +19,20 @@ pub struct GpuTensor {
     pub shape: (usize, usize),
 }
 
+/// GPU 常駐の 4D 画像(NCHW 平坦の GpuTensor + 元の形)
+pub struct GpuImage {
+    pub tensor: GpuTensor,                  // shape = (n, c·h·w)
+    pub dims: (usize, usize, usize, usize), // (n, c, h, w)
+}
+
 pub struct Gpu {
     pub device: Device,
     pub queue: Queue,
     matmul_pipeline: wgpu::ComputePipeline,
     relu_pipeline: wgpu::ComputePipeline,
     bias_add_pipeline: wgpu::ComputePipeline,
+    im2col_pipeline: wgpu::ComputePipeline,
+    nhwc_to_nchw_pipeline: wgpu::ComputePipeline,
 }
 impl Gpu {
     pub fn new() -> Self {
@@ -40,6 +48,9 @@ impl Gpu {
         let relu_pipeline = Self::make_pipeline(&device, include_str!("relu.wgsl"), "relu");
         let bias_add_pipeline =
             Self::make_pipeline(&device, include_str!("bias_add.wgsl"), "bias_add");
+        let im2col_pipeline = Self::make_pipeline(&device, include_str!("im2col.wgsl"), "im2col");
+        let nhwc_to_nchw_pipeline =
+            Self::make_pipeline(&device, include_str!("nhwc_to_nchw.wgsl"), "nhwc_to_nchw");
 
         Gpu {
             device,
@@ -47,6 +58,8 @@ impl Gpu {
             matmul_pipeline,
             relu_pipeline,
             bias_add_pipeline,
+            im2col_pipeline,
+            nhwc_to_nchw_pipeline,
         }
     }
 
@@ -285,6 +298,188 @@ impl Gpu {
             n,
         );
     }
+
+    /// 2 次元 dispatch の定型(dispatch_1d の (x,y) 版。groups は workgroup 数)
+    fn dispatch_2d(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        entries: &[wgpu::BindGroupEntry],
+        groups: (u32, u32),
+    ) {
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(groups.0, groups.1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    /// Array4 画像を (n, c·h·w) に平坦化して GPU へ
+    pub fn upload_image(&self, x: &Array4<f32>) -> GpuImage {
+        let (n, c, h, w) = x.dim();
+        let flat = x.as_standard_layout();
+        let buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("image"),
+                contents: bytemuck::cast_slice(flat.as_slice().expect("standard layout")),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
+        GpuImage {
+            tensor: GpuTensor {
+                buffer,
+                shape: (n, c * h * w),
+            },
+            dims: (n, c, h, w),
+        }
+    }
+
+    /// GPU 常駐 im2col: x は (n, c·h·w) 平坦画像、出力は (n·oh·ow, c·fh·fw)
+    pub fn im2col_gpu(
+        &self,
+        x: &GpuImage,
+        fh: usize,
+        fw: usize,
+        stride: usize,
+        pad: usize,
+    ) -> GpuTensor {
+        let (n, c, h, w) = x.dims;
+        assert_eq!(x.tensor.shape, (n, c * h * w), "image shape mismatch");
+        let oh = (h + 2 * pad - fh) / stride + 1;
+        let ow = (w + 2 * pad - fw) / stride + 1;
+        let (rows, cols) = (n * oh * ow, c * fh * fw);
+
+        let params: [u32; 12] = [
+            n as u32,
+            c as u32,
+            h as u32,
+            w as u32,
+            oh as u32,
+            ow as u32,
+            fh as u32,
+            fw as u32,
+            stride as u32,
+            pad as u32,
+            0,
+            0,
+        ];
+        let p_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("im2col params"),
+                contents: bytemuck::cast_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let out = GpuTensor {
+            buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("col"),
+                size: (rows * cols * std::mem::size_of::<f32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            shape: (rows, cols),
+        };
+        self.dispatch_2d(
+            &self.im2col_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: p_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: x.tensor.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: out.buffer.as_entire_binding(),
+                },
+            ],
+            (cols.div_ceil(16) as u32, rows.div_ceil(16) as u32),
+        );
+        out
+    }
+
+    /// (n·oh·ow, f) → NCHW 平坦 (n, f·oh·ow)。conv を conv に繋ぐための並べ替え
+    pub fn nhwc_to_nchw_gpu(
+        &self,
+        src: &GpuTensor,
+        dims: (usize, usize, usize, usize),
+    ) -> GpuImage {
+        let (n, f, oh, ow) = dims;
+        assert_eq!(src.shape, (n * oh * ow, f));
+        let total = n * f * oh * ow;
+        let params: [u32; 4] = [n as u32, f as u32, oh as u32, ow as u32];
+        let p_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("nhwc_to_nchw params"),
+                contents: bytemuck::cast_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let dst = GpuTensor {
+            buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nhwc_to_nchw dst"),
+                size: (total * std::mem::size_of::<f32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            shape: (n, f * oh * ow),
+        };
+        self.dispatch_1d(
+            &self.nhwc_to_nchw_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: p_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: src.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: dst.buffer.as_entire_binding(),
+                },
+            ],
+            total,
+        );
+        GpuImage {
+            tensor: dst,
+            dims: (n, f, oh, ow),
+        }
+    }
+
+    /// GPU 常駐 conv forward: im2col → matmul → bias → NCHW 並べ替え。
+    /// w_colt は w.reshape(fn, c·fh·fw) の転置 (c·fh·fw, fn)、bias は (1, fn)(CPU で準備して upload)
+    pub fn conv_forward_gpu(
+        &self,
+        x: &GpuImage,
+        w_colt: &GpuTensor,
+        bias: &GpuTensor,
+        fh: usize,
+        fw: usize,
+        stride: usize,
+        pad: usize,
+    ) -> GpuImage {
+        let (n, _c, h, w) = x.dims;
+        let fn_ = w_colt.shape.1;
+        let oh = (h + 2 * pad - fh) / stride + 1;
+        let ow = (w + 2 * pad - fw) / stride + 1;
+        let col = self.im2col_gpu(&x, fh, fw, stride, pad);
+        let mut y = self.matmul_gpu(&col, w_colt);
+        self.add_bias_gpu(&mut y, bias);
+        self.nhwc_to_nchw_gpu(&y, (n, fn_, oh, ow))
+    }
 }
 
 #[cfg(test)]
@@ -293,6 +488,7 @@ mod tests {
     use ndarray::{Array2, array};
     use ndarray_rand::RandomExt;
     use ndarray_rand::rand_distr::StandardNormal;
+    use std::assert_eq;
     use std::hint::black_box;
     use std::time::Instant;
 
@@ -552,5 +748,164 @@ mod tests {
                 roundtrip_s / resident_s,
             );
         }
+    }
+
+    use crate::conv::im2col;
+    #[test]
+    fn test_im2col_gpu() {
+        let gpu = Gpu::new();
+        for (n, c, h, w, fh, fw, stride, pad) in [
+            (
+                1usize, 3usize, 7usize, 7usize, 5usize, 5usize, 1usize, 0usize,
+            ), // 本 7.4.3 の形
+            (2, 2, 4, 4, 2, 2, 2, 0),    // stride 2
+            (2, 3, 5, 6, 3, 3, 1, 1),    // 非正方 + pad
+            (1, 1, 4, 4, 3, 3, 1, 2),    // pad=2(DeepConvNet conv4 と同じ味)
+            (2, 16, 28, 28, 3, 3, 1, 1), // conv1_2 実形(N は縮小)
+        ] {
+            let x: Array4<f32> = Array4::random((n, c, h, w), StandardNormal);
+            let gcol = gpu.im2col_gpu(&gpu.upload_image(&x), fh, fw, stride, pad);
+            // im2col は移動のみ・算術ゼロ → exact 一致(ch7 のルールの GPU 版)
+            assert_eq!(gpu.download(&gcol), im2col(&x, fh, fw, stride, pad));
+        }
+    }
+
+    use crate::conv::ConvolutionLayer;
+    #[test]
+    fn test_conv_forward_gpu() {
+        let gpu = Gpu::new();
+        // (n, c, h, w, fn_, fh, fw, stride, pad)
+        for (n, c, h, w, fn_, fh, fw, stride, pad) in [
+            (2, 3, 7, 7, 5, 3, 3, 1, 1), // プローブ層の形 (pad 1)
+            (2, 3, 7, 7, 5, 3, 3, 2, 2), // Stride 2 と Pad 2 のテスト
+        ] {
+            let x: Array4<f32> = Array4::random((n, c, h, w), StandardNormal);
+            let weight: Array4<f32> = Array4::random((fn_, c, fh, fw), StandardNormal);
+            let bias = ndarray::Array1::random(fn_, StandardNormal);
+
+            // CPU
+            let mut conv = ConvolutionLayer::new(weight.clone(), bias.clone(), stride, pad);
+            let cpu_out = conv.forward(&x); // Array4<f32> が返る
+
+            // GPU
+            // w_colt: (c*fh*fw, fn) への変形と転置 (標準レイアウト化のために assign を使用)
+            let mut w_colt = Array2::<f32>::zeros((c * fh * fw, fn_));
+            w_colt.assign(
+                &weight
+                    .into_shape_with_order((fn_, c * fh * fw))
+                    .unwrap()
+                    .reversed_axes(),
+            );
+
+            let gx = gpu.upload_image(&x);
+            let gw = gpu.upload(&w_colt);
+            let gb = gpu.upload(&bias.into_shape_with_order((1, fn_)).unwrap());
+
+            let gy = gpu.conv_forward_gpu(&gx, &gw, &gb, fh, fw, stride, pad);
+            let gpu_out = gpu.download(&gy.tensor);
+
+            // 比較
+            assert_eq!(
+                gy.dims,
+                (
+                    n,
+                    fn_,
+                    (h + 2 * pad - fh) / stride + 1,
+                    (w + 2 * pad - fw) / stride + 1
+                )
+            );
+            // GPU の出力は NCHW 平坦化された 2D (n, fn*oh*ow) なので、CPU 側もそれに合わせて平坦化
+            let cpu_flat = cpu_out
+                .as_standard_layout()
+                .into_owned()
+                .into_shape_with_order(gpu_out.dim())
+                .unwrap();
+
+            let max_diff = gpu_out
+                .iter()
+                .zip(cpu_flat.iter())
+                .map(|(g, c)| (g - c).abs())
+                .fold(0.0f32, f32::max);
+
+            assert!(max_diff < 1e-3, "max diff {max_diff:e}");
+        }
+    }
+
+    #[test]
+    fn test_conv_chain_gpu() {
+        let gpu = Gpu::new();
+        let (n, c, h, w) = (2, 3, 10, 10);
+
+        let (fn1, fh1, fw1) = (4, 3, 3);
+        let (fn2, fh2, fw2) = (5, 3, 3);
+
+        let x: Array4<f32> = Array4::random((n, c, h, w), StandardNormal);
+
+        let w1: Array4<f32> = Array4::random((fn1, c, fh1, fw1), StandardNormal);
+        let b1 = ndarray::Array1::random(fn1, StandardNormal);
+
+        let w2: Array4<f32> = Array4::random((fn2, fn1, fh2, fw2), StandardNormal);
+        let b2 = ndarray::Array1::random(fn2, StandardNormal);
+
+        // --- CPU 側の連鎖 ---
+        let mut conv1 = ConvolutionLayer::new(w1.clone(), b1.clone(), 1, 1);
+        let mut conv2 = ConvolutionLayer::new(w2.clone(), b2.clone(), 1, 1);
+
+        let c1_out = conv1.forward(&x);
+        let relu_out = c1_out.mapv(|v| v.max(0.0));
+        let cpu_expected = conv2.forward(&relu_out);
+
+        // --- GPU 側の連鎖 ---
+        let gx = gpu.upload_image(&x);
+
+        // 重み 1
+        let mut w1_colt = Array2::<f32>::zeros((c * fh1 * fw1, fn1));
+        w1_colt.assign(
+            &w1.into_shape_with_order((fn1, c * fh1 * fw1))
+                .unwrap()
+                .reversed_axes(),
+        );
+        let gw1 = gpu.upload(&w1_colt);
+        let gb1 = gpu.upload(&b1.into_shape_with_order((1, fn1)).unwrap());
+
+        // 重み 2
+        let mut w2_colt = Array2::<f32>::zeros((fn1 * fh2 * fw2, fn2));
+        w2_colt.assign(
+            &w2.into_shape_with_order((fn2, fn1 * fh2 * fw2))
+                .unwrap()
+                .reversed_axes(),
+        );
+        let gw2 = gpu.upload(&w2_colt);
+        let gb2 = gpu.upload(&b2.into_shape_with_order((1, fn2)).unwrap());
+
+        // GPU での実行: conv1 -> ReLU -> conv2
+        let mut gy1 = gpu.conv_forward_gpu(&gx, &gw1, &gb1, fh1, fw1, 1, 1);
+
+        // relu_gpu は GpuTensor への要素単位演算のため、GpuImage(.tensor) の形状を変えずにそのまま適用可能
+        gpu.relu_gpu(&mut gy1.tensor);
+
+        // NCHW に並べ替えられた gy1 を、そのまま次の conv_forward_gpu に渡す
+        let gy2 = gpu.conv_forward_gpu(&gy1, &gw2, &gb2, fh2, fw2, 1, 1);
+
+        let gpu_out = gpu.download(&gy2.tensor);
+
+        // --- 比較 ---
+        assert_eq!(
+            gy2.dims,
+            (n, fn2, (h + 2 * 1 - fh2) / 1 + 1, (w + 2 * 1 - fw2) / 1 + 1)
+        );
+        let cpu_flat = cpu_expected
+            .as_standard_layout()
+            .into_owned()
+            .into_shape_with_order(gpu_out.dim())
+            .unwrap();
+
+        let max_diff = gpu_out
+            .iter()
+            .zip(cpu_flat.iter())
+            .map(|(g, c)| (g - c).abs())
+            .fold(0.0f32, f32::max);
+
+        assert!(max_diff < 1e-3, "max diff {max_diff:e}");
     }
 }

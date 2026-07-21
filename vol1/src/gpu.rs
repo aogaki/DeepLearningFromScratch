@@ -14,10 +14,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+pub struct GpuTensor {
+    pub buffer: wgpu::Buffer,
+    pub shape: (usize, usize),
+}
+
 pub struct Gpu {
     pub device: Device,
     pub queue: Queue,
     matmul_pipeline: wgpu::ComputePipeline,
+    relu_pipeline: wgpu::ComputePipeline,
+    bias_add_pipeline: wgpu::ComputePipeline,
 }
 impl Gpu {
     pub fn new() -> Self {
@@ -29,24 +36,33 @@ impl Gpu {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("Failed to open GPU device");
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("matmul"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("matmul.wgsl").into()),
-        });
-        let matmul_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("matmul"),
-            layout: None,
-            module: &shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let matmul_pipeline = Self::make_pipeline(&device, include_str!("matmul.wgsl"), "matmul");
+        let relu_pipeline = Self::make_pipeline(&device, include_str!("relu.wgsl"), "relu");
+        let bias_add_pipeline =
+            Self::make_pipeline(&device, include_str!("bias_add.wgsl"), "bias_add");
 
         Gpu {
             device,
             queue,
             matmul_pipeline,
+            relu_pipeline,
+            bias_add_pipeline,
         }
+    }
+
+    fn make_pipeline(device: &wgpu::Device, src: &str, label: &str) -> wgpu::ComputePipeline {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(label),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        })
     }
 
     pub fn read_buffer(&self, buffer: &wgpu::Buffer) -> Vec<f32> {
@@ -129,9 +145,34 @@ impl Gpu {
     }
 
     pub fn matmul(&self, a: &Array2<f32>, b: &Array2<f32>) -> Array2<f32> {
-        let (m, k) = a.dim();
-        let (k2, n) = b.dim();
-        assert_eq!(k, k2, "matmul: inner dimensions must match");
+        self.download(&self.matmul_gpu(&self.upload(a), &self.upload(b)))
+    }
+
+    /// Array2 を GPU バッファへ転送して常駐テンソルにする
+    pub fn upload(&self, a: &Array2<f32>) -> GpuTensor {
+        let buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("tensor"),
+                contents: bytemuck::cast_slice(a.as_slice().expect("standard layout")),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
+        GpuTensor {
+            buffer,
+            shape: a.dim(),
+        }
+    }
+
+    /// 常駐テンソルを CPU に読み戻す
+    pub fn download(&self, t: &GpuTensor) -> Array2<f32> {
+        Array2::from_shape_vec(t.shape, self.read_buffer(&t.buffer)).expect("shape mismatch")
+    }
+
+    /// GPU 常駐 matmul: 入力も出力も GPU に置いたまま
+    pub fn matmul_gpu(&self, a: &GpuTensor, b: &GpuTensor) -> GpuTensor {
+        let (m, k) = a.shape;
+        let (k2, n) = b.shape;
+        assert_eq!(k, k2, "matmul_gpu: inner dimensions must match");
 
         let dims: [u32; 4] = [m as u32, k as u32, n as u32, 0];
         let dims_buf = self
@@ -140,20 +181,6 @@ impl Gpu {
                 label: Some("dims"),
                 contents: bytemuck::cast_slice(&dims),
                 usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let a_buf = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("a"),
-                contents: bytemuck::cast_slice(a.as_slice().expect("a must be standard layout")),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let b_buf = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("b"),
-                contents: bytemuck::cast_slice(b.as_slice().expect("b must be standard layout")),
-                usage: wgpu::BufferUsages::STORAGE,
             });
         let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("out"),
@@ -172,11 +199,11 @@ impl Gpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: a_buf.as_entire_binding(),
+                    resource: a.buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: b_buf.as_entire_binding(),
+                    resource: b.buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -196,8 +223,67 @@ impl Gpu {
         }
         self.queue.submit(Some(encoder.finish()));
 
-        let out = self.read_buffer(&out_buf);
-        Array2::from_shape_vec((m, n), out).expect("output shape mismatch")
+        GpuTensor {
+            buffer: out_buf,
+            shape: (m, n),
+        }
+    }
+
+    /// 1 次元 dispatch の定型(bind group 構築 → pass → submit)
+    fn dispatch_1d(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        entries: &[wgpu::BindGroupEntry],
+        n_threads: usize,
+    ) {
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(n_threads.div_ceil(64) as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    /// GPU 上で in-place ReLU
+    pub fn relu_gpu(&self, x: &mut GpuTensor) {
+        let n = x.shape.0 * x.shape.1;
+        self.dispatch_1d(
+            &self.relu_pipeline,
+            &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: x.buffer.as_entire_binding(),
+            }],
+            n,
+        );
+    }
+
+    /// GPU 上で bias(1,n) を各行に加算(in-place)
+    pub fn add_bias_gpu(&self, x: &mut GpuTensor, bias: &GpuTensor) {
+        assert_eq!(bias.shape, (1, x.shape.1), "bias must be (1, n)");
+        let n = x.shape.0 * x.shape.1;
+        self.dispatch_1d(
+            &self.bias_add_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: x.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: bias.buffer.as_entire_binding(),
+                },
+            ],
+            n,
+        );
     }
 }
 
@@ -313,6 +399,157 @@ mod tests {
                 gpu_s * 1e3,
                 flops / gpu_s / 1e9,
                 cpu_s / gpu_s
+            );
+        }
+    }
+
+    #[test]
+    fn test_matmul_gpu_chain() {
+        let gpu = Gpu::new();
+        let a: Array2<f32> = Array2::random((37, 53), StandardNormal);
+        let b: Array2<f32> = Array2::random((53, 29), StandardNormal);
+        let c: Array2<f32> = Array2::random((29, 41), StandardNormal);
+        // 中間結果を CPU に降ろさず 2 段連鎖
+        let (ga, gb, gc) = (gpu.upload(&a), gpu.upload(&b), gpu.upload(&c));
+        let out = gpu.download(&gpu.matmul_gpu(&gpu.matmul_gpu(&ga, &gb), &gc));
+        let expected = a.dot(&b).dot(&c);
+        let max_diff = out
+            .iter()
+            .zip(expected.iter())
+            .map(|(g, c)| (g - c).abs())
+            .fold(0.0f32, f32::max);
+        assert_eq!(out.dim(), expected.dim());
+        assert!(max_diff < 1e-3, "max diff {max_diff:e}");
+    }
+
+    #[test]
+    fn test_relu_gpu() {
+        let gpu = Gpu::new();
+        let a: Array2<f32> = Array2::random((123, 45), StandardNormal);
+
+        let mut ga = gpu.upload(&a);
+        gpu.relu_gpu(&mut ga);
+        let out = gpu.download(&ga);
+
+        let expected = a.mapv(|v| v.max(0.0));
+
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn test_add_bias_gpu() {
+        let gpu = Gpu::new();
+        let a: Array2<f32> = Array2::random((123, 45), StandardNormal);
+        let b: Array2<f32> = Array2::random((1, 45), StandardNormal);
+
+        let mut ga = gpu.upload(&a);
+        let gb = gpu.upload(&b);
+
+        gpu.add_bias_gpu(&mut ga, &gb);
+        let out = gpu.download(&ga);
+
+        let expected = a + &b;
+
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn test_affine_forward_gpu() {
+        let gpu = Gpu::new();
+        let x: Array2<f32> = Array2::random((37, 53), StandardNormal);
+        let w: Array2<f32> = Array2::random((53, 29), StandardNormal);
+        let b: Array2<f32> = Array2::random((1, 29), StandardNormal);
+
+        let gx = gpu.upload(&x);
+        let gw = gpu.upload(&w);
+        let gb = gpu.upload(&b);
+
+        let mut out_gpu = gpu.matmul_gpu(&gx, &gw);
+        gpu.add_bias_gpu(&mut out_gpu, &gb);
+        gpu.relu_gpu(&mut out_gpu);
+
+        let out = gpu.download(&out_gpu);
+
+        let expected = (x.dot(&w) + &b).mapv(|v| v.max(0.0));
+
+        let max_diff = out
+            .iter()
+            .zip(expected.iter())
+            .map(|(g, c)| (g - c).abs())
+            .fold(0.0f32, f32::max);
+
+        assert_eq!(out.dim(), expected.dim());
+        assert!(max_diff < 1e-3, "max diff {max_diff:e}");
+    }
+
+    #[test]
+    #[ignore] // ベンチ: cargo test --release -p vol1 bench_affine_chain -- --ignored --nocapture
+    fn bench_affine_chain_resident_vs_roundtrip() {
+        let gpu = Gpu::new();
+        let layers = 4;
+        let dim = 1024;
+        for batch in [100usize, 1024] {
+            let x: Array2<f32> = Array2::random((batch, dim), StandardNormal);
+            let ws: Vec<Array2<f32>> = (0..layers)
+                .map(|_| Array2::random((dim, dim), StandardNormal))
+                .collect();
+            let bs: Vec<Array2<f32>> = (0..layers)
+                .map(|_| Array2::random((1, dim), StandardNormal))
+                .collect();
+            let iters = 3;
+
+            // --- CPU ---
+            let cpu_forward = |x: &Array2<f32>| {
+                ws.iter()
+                    .zip(&bs)
+                    .fold(x.clone(), |y, (w, b)| (y.dot(w) + b).mapv(|v| v.max(0.0)))
+            };
+            let _ = cpu_forward(&x);
+            let t = Instant::now();
+            for _ in 0..iters {
+                black_box(cpu_forward(&x));
+            }
+            let cpu_s = t.elapsed().as_secs_f64() / iters as f64;
+
+            // --- GPU 毎層往復(naive な dot 置き換え相当) ---
+            let _ = gpu.matmul(&x, &ws[0]);
+            let t = Instant::now();
+            for _ in 0..iters {
+                let mut y = x.clone();
+                for (w, b) in ws.iter().zip(&bs) {
+                    let mut gy = gpu.matmul_gpu(&gpu.upload(&y), &gpu.upload(w));
+                    gpu.add_bias_gpu(&mut gy, &gpu.upload(b));
+                    gpu.relu_gpu(&mut gy);
+                    y = gpu.download(&gy); // 毎層 CPU に読み戻す(ここが無駄)
+                }
+                black_box(y);
+            }
+            let roundtrip_s = t.elapsed().as_secs_f64() / iters as f64;
+
+            // --- GPU 常駐(重みはループ外で 1 回だけアップロード) ---
+            let gws: Vec<GpuTensor> = ws.iter().map(|w| gpu.upload(w)).collect();
+            let gbs: Vec<GpuTensor> = bs.iter().map(|b| gpu.upload(b)).collect();
+            let t = Instant::now();
+            for _ in 0..iters {
+                let mut gy = gpu.upload(&x); // 上りはバッチだけ
+                for (gw, gb) in gws.iter().zip(&gbs) {
+                    gy = gpu.matmul_gpu(&gy, gw);
+                    gpu.add_bias_gpu(&mut gy, gb);
+                    gpu.relu_gpu(&mut gy);
+                }
+                black_box(gpu.download(&gy)); // 下りは最終結果だけ
+            }
+            let resident_s = t.elapsed().as_secs_f64() / iters as f64;
+
+            let flops = 2.0 * batch as f64 * dim as f64 * dim as f64 * layers as f64;
+            println!(
+                "batch {batch:4}: CPU {:7.2} ms ({:6.1} GF/s) | GPU往復 {:7.2} ms | GPU常駐 {:7.2} ms | 常駐/CPU x{:.2} | 常駐/往復 x{:.2}",
+                cpu_s * 1e3,
+                flops / cpu_s / 1e9,
+                roundtrip_s * 1e3,
+                resident_s * 1e3,
+                cpu_s / resident_s,
+                roundtrip_s / resident_s,
             );
         }
     }

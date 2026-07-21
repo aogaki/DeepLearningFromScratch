@@ -50,5 +50,6 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
 
 ## 現在地(詳細な経過は Auto Memory に任せる)
 - **vol1**: 8.1 完了(Layer トレイト + Vec<Box<dyn Layer>> の DeepConvNet、MNIST 99.32%)。
-  次は wgpu 導入(8.3.2 を読み物の伴走に。8.2〜8.5 は読むだけ)。
+  wgpu 進行中(src/gpu.rs): vec4 matmul カーネル(CPU比 ×11)、GpuTensor 常駐チェーン
+  (4層MLP forward ×11.9)。次は conv/im2col の GPU 化 → DeepConvNet forward を GPU に。
 - vol2〜vol5: 未着手。

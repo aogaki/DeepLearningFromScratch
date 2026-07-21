@@ -33,6 +33,7 @@ pub struct Gpu {
     bias_add_pipeline: wgpu::ComputePipeline,
     im2col_pipeline: wgpu::ComputePipeline,
     nhwc_to_nchw_pipeline: wgpu::ComputePipeline,
+    pooling_pipeline: wgpu::ComputePipeline,
 }
 impl Gpu {
     pub fn new() -> Self {
@@ -51,6 +52,8 @@ impl Gpu {
         let im2col_pipeline = Self::make_pipeline(&device, include_str!("im2col.wgsl"), "im2col");
         let nhwc_to_nchw_pipeline =
             Self::make_pipeline(&device, include_str!("nhwc_to_nchw.wgsl"), "nhwc_to_nchw");
+        let pooling_pipeline =
+            Self::make_pipeline(&device, include_str!("pooling.wgsl"), "pooling");
 
         Gpu {
             device,
@@ -60,6 +63,7 @@ impl Gpu {
             bias_add_pipeline,
             im2col_pipeline,
             nhwc_to_nchw_pipeline,
+            pooling_pipeline,
         }
     }
 
@@ -479,6 +483,94 @@ impl Gpu {
         let mut y = self.matmul_gpu(&col, w_colt);
         self.add_bias_gpu(&mut y, bias);
         self.nhwc_to_nchw_gpu(&y, (n, fn_, oh, ow))
+    }
+
+    pub fn pool_forward_gpu(
+        &self,
+        x: &GpuImage,
+        ph: usize,
+        pw: usize,
+        stride: usize,
+        pad: usize,
+    ) -> (GpuImage, wgpu::Buffer) {
+        let (n, c, h, w) = x.dims;
+        let oh = (h + 2 * pad - ph) / stride + 1;
+        let ow = (w + 2 * pad - pw) / stride + 1;
+        let total = n * c * oh * ow;
+
+        // uniform パラメータ
+        let params: [u32; 12] = [
+            n as u32,
+            c as u32,
+            h as u32,
+            w as u32,
+            oh as u32,
+            ow as u32,
+            ph as u32,
+            pw as u32,
+            stride as u32,
+            pad as u32,
+            0,
+            0,
+        ];
+        let p_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("pooling params"),
+                contents: bytemuck::cast_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        // 出力画像用バッファ (f32)
+        let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pooling out"),
+            size: (total * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // argmax 用バッファ (u32)
+        // テスト等で覗く可能性を見越して COPY_SRC を付与。
+        // u32 の読み出し関数が整備されるまでは生の wgpu::Buffer として安全に保持する。
+        let argmax_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pooling argmax"),
+            size: (total * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        self.dispatch_1d(
+            &self.pooling_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: p_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: x.tensor.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: out_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: argmax_buf.as_entire_binding(),
+                },
+            ],
+            total,
+        );
+
+        let out_img = GpuImage {
+            tensor: GpuTensor {
+                buffer: out_buf,
+                shape: (n, c * oh * ow),
+            },
+            dims: (n, c, oh, ow), // チャンネル数(C)は畳み込みと違い入力のまま維持される
+        };
+
+        (out_img, argmax_buf)
     }
 }
 
@@ -907,5 +999,42 @@ mod tests {
             .fold(0.0f32, f32::max);
 
         assert!(max_diff < 1e-3, "max diff {max_diff:e}");
+    }
+
+    use crate::conv::PoolingLayer;
+    #[test]
+    fn test_pool_forward_gpu() {
+        let gpu = Gpu::new();
+
+        // パラメータ: (n, c, h, w, pool_h, pool_w, stride)
+        for (n, c, h, w, ph, pw, stride) in [
+            (2, 3, 4, 4, 2, 2, 2), // DeepConvNet実形: 2x2 stride 2 (N≥2, C≥2)
+            (2, 2, 7, 7, 2, 2, 2), // 奇数サイズ: 7x7 -> 3x3 に切り捨てられるケース
+            (3, 4, 6, 6, 3, 3, 1), // 別の形状パターン
+        ] {
+            let pad = 0; // exact 一致検証のため pad は 0 固定
+            let x: Array4<f32> = Array4::random((n, c, h, w), StandardNormal);
+
+            // --- CPU 側 ---
+            let mut pool = PoolingLayer::new(ph, pw, stride, pad);
+            let cpu_out = pool.forward(&x); // 戻り値は (n, c, oh, ow) だがメモリは NHWC
+            let (_, _, oh, ow) = cpu_out.dim();
+
+            // --- GPU 側 ---
+            let gx = gpu.upload_image(&x);
+            let (gy, _argmax) = gpu.pool_forward_gpu(&gx, ph, pw, stride, pad);
+            let gpu_out = gpu.download(&gy.tensor); // 戻り値は (n, c*oh*ow)
+
+            // --- 比較 ---
+            // CPU 側の Array4 は内部が非連続メモリになっているため、標準レイアウトに直してから NCHW 平坦化
+            let cpu_flat = cpu_out
+                .as_standard_layout()
+                .into_owned()
+                .into_shape_with_order((n, c * oh * ow))
+                .unwrap();
+
+            // Max は純粋な選択操作（算術演算なし）なので exact に一致する
+            assert_eq!(gpu_out, cpu_flat);
+        }
     }
 }

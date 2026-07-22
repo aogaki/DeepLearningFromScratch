@@ -84,7 +84,7 @@ pub struct GpuDeepConvNet {
     ra1: GpuReluLayer,
     af2: GpuAffineLayer,
 
-    original_shape: Option<(usize, usize, usize, usize)>, // 入力画像の形状 (batch, channel, height, width)
+    flatten_dims: Option<(usize, usize, usize, usize)>, // 入力画像の形状 (batch, channel, height, width)
 }
 impl GpuDeepConvNet {
     pub fn new(gpu: &Gpu) -> Self {
@@ -116,7 +116,7 @@ impl GpuDeepConvNet {
             ra1: GpuReluLayer::new(),
             af2: GpuAffineLayer::new(gpu, &params.wa2, &params.ba2),
 
-            original_shape: None,
+            flatten_dims: None,
         }
     }
 
@@ -140,7 +140,7 @@ impl GpuDeepConvNet {
         gout = self.p3.forward(gpu, &gout);
 
         // Flatten: ノーコストの型変換
-        self.original_shape = Some(gout.dims);
+        self.flatten_dims = Some(gout.dims);
         let mut gout_tensor = gout.tensor;
 
         gout_tensor = self.af1.forward(gpu, &gout_tensor);
@@ -158,7 +158,7 @@ impl GpuDeepConvNet {
         let mut gd_img = GpuImage {
             tensor: gd,
             dims: self
-                .original_shape
+                .flatten_dims
                 .expect("forward must be called before backward"),
         };
 
@@ -198,7 +198,8 @@ impl GpuDeepConvNet {
 mod tests {
     use super::*;
     use crate::conv::{ConvolutionLayer, PoolingLayer};
-    use crate::layers::{AffineLayer, FlattenLayer, Layer, ReluLayer};
+    use crate::layers::{AffineLayer, FlattenLayer, Layer, ReluLayer, SoftmaxWithLossLayer};
+    use crate::mnist::{load_images, load_labels, to_one_hot};
     use ndarray::{Axis, Ix4};
     use ndarray_rand::RandomExt;
     use ndarray_rand::rand_distr::StandardNormal;
@@ -374,5 +375,71 @@ mod tests {
             .map(|(c, g)| (c - g).abs())
             .fold(0.0f32, f32::max);
         assert!(diff_af2_db < eps, "af2 db diff: {diff_af2_db:e}");
+    }
+
+    #[test]
+    #[ignore] // 実行: cargo test --release train_mnist_deep_gpu_smoke -- --ignored --nocapture
+    fn train_mnist_deep_gpu_smoke() {
+        println!("Loading MNIST dataset...");
+        let x_train = load_images("dataset/train-images-idx3-ubyte")
+            .into_shape_with_order((60000, 1, 28, 28))
+            .unwrap();
+        let t_train = load_labels("dataset/train-labels-idx1-ubyte");
+
+        let gpu = Gpu::new();
+        let mut net = GpuDeepConvNet::new(&gpu);
+        let mut swl = SoftmaxWithLossLayer::new();
+
+        let train_size = x_train.shape()[0];
+        let batch_size = 100;
+        let max_iters = 50;
+        let lr = 0.01f32; // 今回は素の SGD
+
+        let mut rng = rand::rng();
+        let mut first_loss = 0.0;
+        let mut last_loss = 0.0;
+
+        println!("--- Training GpuDeepConvNet (Smoke Test / 50 iters) ---");
+
+        for i in 1..=max_iters {
+            // 1. バッチ抽出 (CPU)
+            let idx = rand::seq::index::sample(&mut rng, train_size, batch_size).into_vec();
+            let x_batch = x_train.select(Axis(0), &idx);
+            let batch_labels: Vec<u8> = idx.iter().map(|&j| t_train[j]).collect();
+            let t_batch = to_one_hot(&batch_labels, 10);
+
+            // 2. GPU Forward (上り 300KB)
+            let gx = gpu.upload_image(&x_batch);
+            let gout = net.forward(&gpu, &gx);
+
+            // 3. Logit ダウンロード & CPU Loss計算 (下り 4KB)
+            let logit = gpu.download(&gout);
+            let loss = swl.forward(logit, t_batch);
+
+            if i == 1 {
+                first_loss = loss;
+            }
+            last_loss = loss;
+            if i % 10 == 0 || i == 1 {
+                println!("  iter {:3} | loss: {:.4}", i, loss);
+            }
+
+            // 4. CPU Softmax Backward
+            let dx_cpu = swl.backward(1.0);
+
+            // 5. GPU Backward & Update (上り 4KB)
+            let gdout = gpu.upload(&dx_cpu);
+            let _ = net.backward(&gpu, &gdout); // dx は捨てる
+            net.update(&gpu, lr);
+        }
+
+        // Loss が開始時より確実に下がっていることをアサート
+        assert!(
+            last_loss < first_loss,
+            "Loss should decrease. first: {:.4}, last: {:.4}",
+            first_loss,
+            last_loss
+        );
+        println!("Smoke test passed! Loss successfully decreased.");
     }
 }

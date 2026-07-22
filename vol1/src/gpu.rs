@@ -30,10 +30,14 @@ pub struct Gpu {
     pub queue: Queue,
     matmul_pipeline: wgpu::ComputePipeline,
     relu_pipeline: wgpu::ComputePipeline,
+    relu_backward_pipeline: wgpu::ComputePipeline,
     bias_add_pipeline: wgpu::ComputePipeline,
     im2col_pipeline: wgpu::ComputePipeline,
     nhwc_to_nchw_pipeline: wgpu::ComputePipeline,
     pooling_pipeline: wgpu::ComputePipeline,
+    pool_backward_pipeline: wgpu::ComputePipeline,
+    matmul_tn_pipeline: wgpu::ComputePipeline,
+    column_sum_pipeline: wgpu::ComputePipeline,
 }
 impl Gpu {
     pub fn new() -> Self {
@@ -47,6 +51,8 @@ impl Gpu {
 
         let matmul_pipeline = Self::make_pipeline(&device, include_str!("matmul.wgsl"), "matmul");
         let relu_pipeline = Self::make_pipeline(&device, include_str!("relu.wgsl"), "relu");
+        let relu_backward_pipeline =
+            Self::make_pipeline(&device, include_str!("relu_backward.wgsl"), "relu_backward");
         let bias_add_pipeline =
             Self::make_pipeline(&device, include_str!("bias_add.wgsl"), "bias_add");
         let im2col_pipeline = Self::make_pipeline(&device, include_str!("im2col.wgsl"), "im2col");
@@ -54,16 +60,26 @@ impl Gpu {
             Self::make_pipeline(&device, include_str!("nhwc_to_nchw.wgsl"), "nhwc_to_nchw");
         let pooling_pipeline =
             Self::make_pipeline(&device, include_str!("pooling.wgsl"), "pooling");
+        let pool_backward_pipeline =
+            Self::make_pipeline(&device, include_str!("pool_backward.wgsl"), "pool_backward");
+        let matmul_tn_pipeline =
+            Self::make_pipeline(&device, include_str!("matmul_tn.wgsl"), "matmul_tn");
+        let column_sum_pipeline =
+            Self::make_pipeline(&device, include_str!("column_sum.wgsl"), "column_sum");
 
         Gpu {
             device,
             queue,
             matmul_pipeline,
             relu_pipeline,
+            relu_backward_pipeline,
             bias_add_pipeline,
             im2col_pipeline,
             nhwc_to_nchw_pipeline,
             pooling_pipeline,
+            pool_backward_pipeline,
+            matmul_tn_pipeline,
+            column_sum_pipeline,
         }
     }
 
@@ -235,6 +251,65 @@ impl Gpu {
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&self.matmul_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(n.div_ceil(32) as u32, m.div_ceil(32) as u32, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+
+        GpuTensor {
+            buffer: out_buf,
+            shape: (m, n),
+        }
+    }
+
+    /// C (m,n) = Aᵀ·B。A は (k,m) 格納のまま転置読みする(実体化しない)
+    pub fn matmul_tn_gpu(&self, a: &GpuTensor, b: &GpuTensor) -> GpuTensor {
+        let (k, m) = a.shape;
+        let (k2, n) = b.shape;
+        assert_eq!(k, k2, "matmul_tn_gpu: sum dimensions must match");
+        let dims: [u32; 4] = [m as u32, k as u32, n as u32, 0];
+        let dims_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("dims"),
+                contents: bytemuck::cast_slice(&dims),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("out"),
+            size: (m * n * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.matmul_tn_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dims_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: a.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: b.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: out_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&self.matmul_tn_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(n.div_ceil(32) as u32, m.div_ceil(32) as u32, 1);
         }
@@ -572,12 +647,159 @@ impl Gpu {
 
         (out_img, argmax_buf)
     }
+
+    pub fn pool_backward_gpu(
+        &self,
+        dout: &GpuImage,
+        argmax: &wgpu::Buffer,
+        x_dims: (usize, usize, usize, usize),
+        ph: usize,
+        pw: usize,
+        stride: usize,
+        pad: usize,
+    ) -> GpuImage {
+        // 将来 overlap を使おうとした自分への警告文
+        assert!(
+            stride >= ph.max(pw),
+            "overlapping pooling requires atomic scatter"
+        );
+
+        let (n, c, oh, ow) = dout.dims;
+        let (_, _, h, w) = x_dims;
+
+        // uniformアライメント(16byteの倍数)を満たすため、末尾をパディングして12要素(48byte)にする
+        let dims: [u32; 12] = [
+            n as u32,
+            c as u32,
+            h as u32,
+            w as u32,
+            oh as u32,
+            ow as u32,
+            ph as u32,
+            pw as u32,
+            stride as u32,
+            pad as u32,
+            0,
+            0,
+        ];
+
+        let dims_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("pool_backward dims"),
+                contents: bytemuck::cast_slice(&dims),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        // WebGPU仕様によるゼロ初期化を利用（明示的クリア不要）
+        let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pool_backward out"),
+            size: (n * c * h * w * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        self.dispatch_1d(
+            &self.pool_backward_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dims_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: dout.tensor.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: argmax.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: out_buf.as_entire_binding(),
+                },
+            ],
+            n * c * oh * ow,
+        );
+
+        GpuImage {
+            tensor: GpuTensor {
+                buffer: out_buf,
+                shape: (n, c * h * w),
+            },
+            dims: (n, c, h, w),
+        }
+    }
+
+    /// 列ごとの総和 (rows, cols) → (1, cols)。affine/conv の db 用
+    pub fn column_sum_gpu(&self, x: &GpuTensor) -> GpuTensor {
+        let (rows, cols) = x.shape;
+        let dims: [u32; 4] = [rows as u32, cols as u32, 0, 0];
+        let dims_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("column_sum dims"),
+                contents: bytemuck::cast_slice(&dims),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("column_sum out"),
+            size: (cols * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        self.dispatch_1d(
+            &self.column_sum_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dims_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: x.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: out_buf.as_entire_binding(),
+                },
+            ],
+            cols,
+        );
+        GpuTensor {
+            buffer: out_buf,
+            shape: (1, cols),
+        }
+    }
+
+    /// ReLU backward (in-place)
+    /// dout = dout * (act > 0.0)
+    pub fn relu_backward_gpu(&self, dout: &mut GpuTensor, act: &GpuTensor) {
+        assert_eq!(dout.shape, act.shape, "relu_backward_gpu: shape mismatch");
+        let n = dout.shape.0 * dout.shape.1;
+        self.dispatch_1d(
+            &self.relu_backward_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dout.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: act.buffer.as_entire_binding(),
+                },
+            ],
+            n,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{Array2, array};
+    use crate::conv::{ConvolutionLayer, PoolingLayer};
+    use crate::layers::{AffineLayer, FlattenLayer, Layer, ReluLayer};
+    use ndarray::{Array1, Array2, Array4, Ix2, array};
     use ndarray_rand::RandomExt;
     use ndarray_rand::rand_distr::StandardNormal;
     use std::assert_eq;
@@ -862,7 +1084,6 @@ mod tests {
         }
     }
 
-    use crate::conv::ConvolutionLayer;
     #[test]
     fn test_conv_forward_gpu() {
         let gpu = Gpu::new();
@@ -1001,7 +1222,6 @@ mod tests {
         assert!(max_diff < 1e-3, "max diff {max_diff:e}");
     }
 
-    use crate::conv::PoolingLayer;
     #[test]
     fn test_pool_forward_gpu() {
         let gpu = Gpu::new();
@@ -1035,6 +1255,402 @@ mod tests {
 
             // Max は純粋な選択操作（算術演算なし）なので exact に一致する
             assert_eq!(gpu_out, cpu_flat);
+        }
+    }
+
+    fn run_deep_conv_net_gpu_vs_cpu(batch: usize) {
+        let gpu = Gpu::new();
+        let x: Array4<f32> = Array4::random((batch, 1, 28, 28), StandardNormal);
+
+        let he_conv = |fn_: usize, c: usize, fh: usize, fw: usize| -> Array4<f32> {
+            let fan_in = (c * fh * fw) as f32;
+            let scale = (2.0 / fan_in).sqrt();
+            Array4::random((fn_, c, fh, fw), StandardNormal) * scale
+        };
+        let he_affine = |fan_in: usize, fan_out: usize| -> Array2<f32> {
+            let scale = (2.0 / fan_in as f32).sqrt();
+            Array2::random((fan_in, fan_out), StandardNormal) * scale
+        };
+
+        // Weights and biases for both CPU and GPU
+        let w1_1 = he_conv(16, 1, 3, 3);
+        let b1_1 = Array1::<f32>::zeros(16);
+        let w1_2 = he_conv(16, 16, 3, 3);
+        let b1_2 = Array1::<f32>::zeros(16);
+
+        let w2_1 = he_conv(32, 16, 3, 3);
+        let b2_1 = Array1::<f32>::zeros(32);
+        let w2_2 = he_conv(32, 32, 3, 3); // 後の ConvolutionLayer 構築で pad=2 を指定
+        let b2_2 = Array1::<f32>::zeros(32);
+
+        let w3_1 = he_conv(64, 32, 3, 3);
+        let b3_1 = Array1::<f32>::zeros(64);
+        let w3_2 = he_conv(64, 64, 3, 3);
+        let b3_2 = Array1::<f32>::zeros(64);
+
+        let wa1 = he_affine(64 * 4 * 4, 50);
+        let ba1 = Array2::<f32>::zeros((1, 50));
+        let wa2 = he_affine(50, 10);
+        let ba2 = Array2::<f32>::zeros((1, 10));
+
+        // CPU
+        let mut c1_1 = ConvolutionLayer::new(w1_1.clone(), b1_1.clone(), 1, 1);
+        let mut r1_1 = ReluLayer::new();
+        let mut c1_2 = ConvolutionLayer::new(w1_2.clone(), b1_2.clone(), 1, 1);
+        let mut r1_2 = ReluLayer::new();
+        let mut p1 = PoolingLayer::new(2, 2, 2, 0);
+
+        let mut c2_1 = ConvolutionLayer::new(w2_1.clone(), b2_1.clone(), 1, 1);
+        let mut r2_1 = ReluLayer::new();
+        let mut c2_2 = ConvolutionLayer::new(w2_2.clone(), b2_2.clone(), 1, 2); // ★ pad=2
+        let mut r2_2 = ReluLayer::new();
+        let mut p2 = PoolingLayer::new(2, 2, 2, 0);
+
+        let mut c3_1 = ConvolutionLayer::new(w3_1.clone(), b3_1.clone(), 1, 1);
+        let mut r3_1 = ReluLayer::new();
+        let mut c3_2 = ConvolutionLayer::new(w3_2.clone(), b3_2.clone(), 1, 1);
+        let mut r3_2 = ReluLayer::new();
+        let mut p3 = PoolingLayer::new(2, 2, 2, 0);
+
+        let mut flat = FlattenLayer::new();
+        let mut af1 = AffineLayer::new(wa1.clone(), ba1.clone());
+        let mut ra1 = ReluLayer::new();
+        let mut af2 = AffineLayer::new(wa2.clone(), ba2.clone());
+
+        let mut cpu_forward = |x: &Array4<f32>| -> Array2<f32> {
+            let mut out = x.clone().into_dyn();
+            out = Layer::forward(&mut c1_1, out, false);
+            out = Layer::forward(&mut r1_1, out, false);
+            out = Layer::forward(&mut c1_2, out, false);
+            out = Layer::forward(&mut r1_2, out, false);
+            out = Layer::forward(&mut p1, out, false);
+
+            out = Layer::forward(&mut c2_1, out, false);
+            out = Layer::forward(&mut r2_1, out, false);
+            out = Layer::forward(&mut c2_2, out, false);
+            out = Layer::forward(&mut r2_2, out, false);
+            out = Layer::forward(&mut p2, out, false);
+
+            out = Layer::forward(&mut c3_1, out, false);
+            out = Layer::forward(&mut r3_1, out, false);
+            out = Layer::forward(&mut c3_2, out, false);
+            out = Layer::forward(&mut r3_2, out, false);
+            out = Layer::forward(&mut p3, out, false);
+
+            out = Layer::forward(&mut flat, out, false);
+            out = Layer::forward(&mut af1, out, false);
+            out = Layer::forward(&mut ra1, out, false);
+            out = Layer::forward(&mut af2, out, false);
+            out.into_dimensionality::<Ix2>().unwrap()
+        };
+
+        let _ = cpu_forward(&x); // warmup
+        let t_cpu = Instant::now();
+        let cpu_out = cpu_forward(&x);
+        let cpu_time = t_cpu.elapsed();
+
+        // GPU
+        fn prep_conv_w(w: &Array4<f32>) -> Array2<f32> {
+            let (fn_, c, fh, fw) = w.dim();
+            let mut w_colt = Array2::<f32>::zeros((c * fh * fw, fn_));
+            w_colt.assign(
+                &w.clone()
+                    .into_shape_with_order((fn_, c * fh * fw))
+                    .unwrap()
+                    .reversed_axes(),
+            );
+            w_colt
+        }
+
+        let gw1_1 = gpu.upload(&prep_conv_w(&w1_1));
+        let gb1_1 = gpu.upload(&b1_1.into_shape_with_order((1, 16)).unwrap());
+        let gw1_2 = gpu.upload(&prep_conv_w(&w1_2));
+        let gb1_2 = gpu.upload(&b1_2.into_shape_with_order((1, 16)).unwrap());
+
+        let gw2_1 = gpu.upload(&prep_conv_w(&w2_1));
+        let gb2_1 = gpu.upload(&b2_1.into_shape_with_order((1, 32)).unwrap());
+        let gw2_2 = gpu.upload(&prep_conv_w(&w2_2));
+        let gb2_2 = gpu.upload(&b2_2.into_shape_with_order((1, 32)).unwrap());
+
+        let gw3_1 = gpu.upload(&prep_conv_w(&w3_1));
+        let gb3_1 = gpu.upload(&b3_1.into_shape_with_order((1, 64)).unwrap());
+        let gw3_2 = gpu.upload(&prep_conv_w(&w3_2));
+        let gb3_2 = gpu.upload(&b3_2.into_shape_with_order((1, 64)).unwrap());
+
+        let gwa1 = gpu.upload(&wa1);
+        let gba1 = gpu.upload(&ba1);
+        let gwa2 = gpu.upload(&wa2);
+        let gba2 = gpu.upload(&ba2);
+
+        let gpu_forward = |x: &Array4<f32>| -> Array2<f32> {
+            let mut gx = gpu.upload_image(x);
+
+            // Block 1
+            gx = gpu.conv_forward_gpu(&gx, &gw1_1, &gb1_1, 3, 3, 1, 1);
+            gpu.relu_gpu(&mut gx.tensor);
+            gx = gpu.conv_forward_gpu(&gx, &gw1_2, &gb1_2, 3, 3, 1, 1);
+            gpu.relu_gpu(&mut gx.tensor);
+            let (gx_pool1, _) = gpu.pool_forward_gpu(&gx, 2, 2, 2, 0);
+
+            // Block 2
+            gx = gpu.conv_forward_gpu(&gx_pool1, &gw2_1, &gb2_1, 3, 3, 1, 1);
+            gpu.relu_gpu(&mut gx.tensor);
+            gx = gpu.conv_forward_gpu(&gx, &gw2_2, &gb2_2, 3, 3, 1, 2); // ★ pad=2
+            gpu.relu_gpu(&mut gx.tensor);
+            let (gx_pool2, _) = gpu.pool_forward_gpu(&gx, 2, 2, 2, 0);
+
+            // Block 3
+            gx = gpu.conv_forward_gpu(&gx_pool2, &gw3_1, &gb3_1, 3, 3, 1, 1);
+            gpu.relu_gpu(&mut gx.tensor);
+            gx = gpu.conv_forward_gpu(&gx, &gw3_2, &gb3_2, 3, 3, 1, 1);
+            gpu.relu_gpu(&mut gx.tensor);
+            let (gx_pool3, _) = gpu.pool_forward_gpu(&gx, 2, 2, 2, 0);
+
+            let mut g_af1 = gpu.matmul_gpu(&gx_pool3.tensor, &gwa1);
+            gpu.add_bias_gpu(&mut g_af1, &gba1);
+            gpu.relu_gpu(&mut g_af1);
+
+            let mut g_af2 = gpu.matmul_gpu(&g_af1, &gwa2);
+            gpu.add_bias_gpu(&mut g_af2, &gba2);
+
+            gpu.download(&g_af2)
+        };
+
+        let _ = gpu_forward(&x); // warmup
+        let t_gpu = Instant::now();
+        let gpu_out = gpu_forward(&x);
+        let gpu_time = t_gpu.elapsed();
+
+        println!(
+            "DeepConvNet Forward (batch={}): CPU {:.2} ms | GPU {:.2} ms | Speedup: {:.2}x",
+            batch,
+            cpu_time.as_secs_f64() * 1000.0,
+            gpu_time.as_secs_f64() * 1000.0,
+            cpu_time.as_secs_f64() / gpu_time.as_secs_f64()
+        );
+
+        // 比較対象はsoftmax前のロジット10列
+        let max_diff = cpu_out
+            .iter()
+            .zip(gpu_out.iter())
+            .map(|(c, g)| (c - g).abs())
+            .fold(0.0f32, f32::max);
+
+        println!("Max logit diff: {}", max_diff);
+
+        // conv 6段 + affine 2段を経由した誤差蓄積のため、eps = 1e-2 で安全に判定
+        assert!(max_diff < 1e-2, "Max diff is too large: {}", max_diff);
+    }
+
+    #[test]
+    fn test_deepconv_forward_gpu_correctness() {
+        run_deep_conv_net_gpu_vs_cpu(2);
+    }
+
+    #[test]
+    #[ignore] // ベンチ cargo test --release -p vol1 bench_deepconv -- --ignored --nocapture
+    fn bench_deepconv_forward_gpu_vs_cpu() {
+        run_deep_conv_net_gpu_vs_cpu(100);
+    }
+
+    #[test]
+    fn test_matmul_tn_gpu() {
+        let gpu = Gpu::new();
+
+        // (k, m, n) の組み合わせ
+        for (k, m, n) in [
+            (3, 7, 5),       // 素数サイズ
+            (1000, 100, 50), // 誤差蓄積ケース
+        ] {
+            // A: (k, m) -> 転置して (m, k) 扱い
+            let a: Array2<f32> = Array2::random((k, m), StandardNormal);
+            // B: (k, n)
+            let b: Array2<f32> = Array2::random((k, n), StandardNormal);
+
+            // CPU: A^T * B -> (m, n)
+            let cpu_out = a.t().dot(&b);
+
+            let ga = gpu.upload(&a);
+            let gb = gpu.upload(&b);
+            let gy = gpu.matmul_tn_gpu(&ga, &gb);
+            let gpu_out = gpu.download(&gy);
+
+            let max_diff = cpu_out
+                .iter()
+                .zip(gpu_out.iter())
+                .map(|(c, g)| (c - g).abs())
+                .fold(0.0f32, f32::max);
+
+            // 誤差蓄積が大きいケースでも 1e-3 以下に収まるか
+            assert!(
+                max_diff < 1e-3,
+                "max diff {max_diff:e} for (k={k}, m={m}, n={n})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_column_sum_gpu() {
+        use ndarray::Axis;
+        let gpu = Gpu::new();
+
+        for (rows, cols) in [(3, 7), (100, 50)] {
+            let x: Array2<f32> = Array2::random((rows, cols), StandardNormal);
+            let cpu_out = x
+                .sum_axis(Axis(0))
+                .into_shape_with_order((1, cols))
+                .unwrap();
+
+            let gx = gpu.upload(&x);
+            let gy = gpu.column_sum_gpu(&gx);
+            let gpu_out = gpu.download(&gy);
+
+            let max_diff = cpu_out
+                .iter()
+                .zip(gpu_out.iter())
+                .map(|(c, g)| (c - g).abs())
+                .fold(0.0f32, f32::max);
+
+            assert!(max_diff < 1e-4, "max diff {max_diff:e} for ({rows}x{cols})");
+        }
+    }
+
+    #[test]
+    fn test_affine_backward_gpu() {
+        use crate::layers::{AffineLayer, Layer};
+        use ndarray::Ix2;
+
+        let gpu = Gpu::new();
+
+        let batch = 100;
+        let in_size = 50;
+        let out_size = 10;
+
+        let x: Array2<f32> = Array2::random((batch, in_size), StandardNormal);
+        let w: Array2<f32> = Array2::random((in_size, out_size), StandardNormal);
+        let b: Array2<f32> = Array2::zeros((1, out_size));
+        let dout: Array2<f32> = Array2::random((batch, out_size), StandardNormal);
+
+        // --- CPU: forward -> backward ---
+        let mut affine = AffineLayer::new(w.clone(), b.clone());
+        let _ = Layer::forward(&mut affine, x.clone().into_dyn(), false); // xを保持させる
+        let cpu_dx = Layer::backward(&mut affine, dout.clone().into_dyn())
+            .into_dimensionality::<Ix2>()
+            .unwrap();
+        let cpu_dw = affine.dw();
+        let cpu_db = affine.db();
+
+        // --- GPU ---
+        let gx = gpu.upload(&x);
+        let gdout = gpu.upload(&dout);
+
+        // 1. dW = matmul_tn(x, dout)
+        // x: (batch, in_size), dout: (batch, out_size)
+        // TNにより x^T * dout = (in_size, out_size) が直接得られる
+        let gdw = gpu.matmul_tn_gpu(&gx, &gdout);
+        let gpu_dw = gpu.download(&gdw);
+
+        // 2. dx = matmul(dout, wᵀ)
+        // standard matmul_gpu を使うため、メモリ上で連続な W^T を事前作成して転送
+        let mut w_t = Array2::<f32>::zeros((out_size, in_size));
+        w_t.assign(&w.t());
+        let gw_t = gpu.upload(&w_t);
+        let gdx = gpu.matmul_gpu(&gdout, &gw_t);
+        let gpu_dx = gpu.download(&gdx);
+
+        // 3. db = column_sum(dout)
+        let gdb = gpu.column_sum_gpu(&gdout);
+        let gpu_db = gpu.download(&gdb);
+
+        // --- 比較 ---
+        let diff_dx = cpu_dx
+            .iter()
+            .zip(gpu_dx.iter())
+            .map(|(c, g)| (c - g).abs())
+            .fold(0.0f32, f32::max);
+        let diff_dw = cpu_dw
+            .iter()
+            .zip(gpu_dw.iter())
+            .map(|(c, g)| (c - g).abs())
+            .fold(0.0f32, f32::max);
+        let diff_db = cpu_db
+            .iter()
+            .zip(gpu_db.iter())
+            .map(|(c, g)| (c - g).abs())
+            .fold(0.0f32, f32::max);
+
+        assert!(diff_dx < 1e-3, "dx diff: {diff_dx:e}");
+        assert!(diff_dw < 1e-3, "dw diff: {diff_dw:e}");
+        assert!(diff_db < 1e-3, "db diff: {diff_db:e}");
+    }
+
+    #[test]
+    fn test_relu_backward_gpu() {
+        let gpu = Gpu::new();
+        let (rows, cols) = (100, 50);
+
+        // x には正負を混ぜたランダム値を入れる
+        let x: Array2<f32> = Array2::random((rows, cols), StandardNormal);
+        let dout: Array2<f32> = Array2::random((rows, cols), StandardNormal);
+
+        // --- CPU ---
+        let mut relu = ReluLayer::new();
+        // forward を実行して内部にマスク(self.mask)を保存させる
+        let _ = Layer::forward(&mut relu, x.clone().into_dyn(), false);
+        // backward 実行
+        let cpu_dx = Layer::backward(&mut relu, dout.clone().into_dyn())
+            .into_dimensionality::<Ix2>()
+            .unwrap();
+
+        // --- GPU ---
+        // GPU ではマスクの代わりに forward の出力 (act) を用いる
+        let mut gx = gpu.upload(&x);
+        gpu.relu_gpu(&mut gx); // in-place forward: gx は act になる
+
+        let mut gdout = gpu.upload(&dout);
+        gpu.relu_backward_gpu(&mut gdout, &gx);
+        let gpu_dx = gpu.download(&gdout);
+
+        assert_eq!(cpu_dx, gpu_dx, "relu backward must be exact match");
+    }
+
+    #[test]
+    fn test_pool_backward_gpu() {
+        let gpu = Gpu::new();
+
+        for (n, c, h, w, ph, pw, stride) in [
+            (2, 3, 4, 4, 2, 2, 2), // DeepConvNet実形: 2x2 stride 2
+            (2, 2, 7, 7, 2, 2, 2), // 奇数サイズ: 7x7 -> 3x3 に切り捨てられるケース
+            (3, 4, 6, 6, 3, 3, 3), // overlap回避のため、forwardのstride=1から3に修正
+        ] {
+            let pad = 0;
+            let x: Array4<f32> = Array4::random((n, c, h, w), StandardNormal);
+
+            // --- CPU ---
+            let mut pool = PoolingLayer::new(ph, pw, stride, pad);
+            let cpu_out = pool.forward(&x); // 順伝播でargmaxを保存
+            let (_, _, oh, ow) = cpu_out.dim();
+
+            let dout: Array4<f32> = Array4::random((n, c, oh, ow), StandardNormal);
+            let cpu_dx = pool.backward(&dout);
+
+            // --- GPU ---
+            let gx = gpu.upload_image(&x);
+            // 順伝播で argmax_buf を生成
+            let (_gy, argmax_buf) = gpu.pool_forward_gpu(&gx, ph, pw, stride, pad);
+
+            let gdout = gpu.upload_image(&dout);
+            let gdx = gpu.pool_backward_gpu(&gdout, &argmax_buf, (n, c, h, w), ph, pw, stride, pad);
+            let gpu_dx = gpu.download(&gdx.tensor);
+
+            // 比較 (N, C*H*W に平坦化)
+            let cpu_dx_flat = cpu_dx
+                .as_standard_layout()
+                .into_owned()
+                .into_shape_with_order((n, c * h * w))
+                .unwrap();
+
+            assert_eq!(cpu_dx_flat, gpu_dx, "pool backward must be exact match");
         }
     }
 }

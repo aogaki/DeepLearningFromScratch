@@ -170,10 +170,72 @@ batch 1024: CPU 74.6  ms | GPU毎層往復 13.3 ms | GPU常駐 6.27 ms(CPU比 ×
 6. exact assert と誤差 assert の使い分けは「演算の種類」で決める: 移動・比較・×2・
    整数値演算 → exact / 加算順が変わる総和 → eps(ulp × 加算回数で見積もる)。
 
-## 9. 現在地と次の課題
+## 9. im2col の GPU 化
 
-- 済み: 接続 / 往復 / 要素ごとカーネル / vec4 matmul(×11)/ 常駐チェーン(×11.9)
-- 次: **conv の GPU 化**。im2col を WGSL シェーダにして(4 重ループは「1 スレッド =
-  出力 1 要素」に素直に翻訳できる形をしている)、画像を GPU に置いたまま
-  im2col → matmul → … と流す。最終目標は DeepConvNet の forward/backward を GPU 常駐で
-  回し、0.41 s/iter がどこまで縮むかを測ること。
+CPU 版の 4 重ループ(n / out_y / out_x / チャンネル×窓)は、GPU では
+「**1 スレッド = col 行列の 1 要素**」+ 平坦添字からの `div`/`mod` 復元に翻訳できる
+([`src/im2col.wgsl`](../src/im2col.wgsl))。ハマりどころ:
+
+- **pad の添字は i32 で計算する。** `oy*stride + fy - pad` は負になり得るが、WGSL の
+  u32 減算は panic せず**黙ってラップする**(Rust の debug ビルドより恐い)。
+- **2D dispatch が必須。** conv1_2 実寸の col は 78400×144 ≈ 1130 万要素。1 次元だと
+  workgroup 数が**1 次元あたり上限 65535** を超えて実行時エラーになる。
+- テストは CPU 版 im2col と **`assert_eq!` 完全一致**(im2col は移動のみで算術ゼロ)。
+
+## 10. conv forward 一式と GpuImage
+
+conv には im2col・matmul のほかに「(N·OH·OW, FN) → NCHW への並べ替え」
+([`src/nhwc_to_nchw.wgsl`](../src/nhwc_to_nchw.wgsl))が要る — CPU 版の
+`permuted_axes([0,3,1,2])` に相当し、これがないと**次の層の im2col に食わせられない**。
+
+4D の形情報の別送りが 3 箇所に達した時点で `GpuImage { tensor, dims }` を導入
+(形はデータに同伴させる)。`conv_forward_gpu` = im2col → matmul → bias → 並べ替え。
+検収は conv→ReLU→conv の 2 層連鎖を CPU と比較(チャンネル数を 3→4→5 と**全部変える** —
+同数だとルーティングのバグが見えない)。
+
+この過程で「**bind group のエントリ欠落はコンパイルが通り、実行時 validation で初めて
+落ちる**」「**呼ばれない新関数はスイートが green でも何も検証されていない**」という
+2 大教訓を実地で踏んだ(8 章の落とし穴 1・2 の実例)。
+
+## 11. pooling シェーダ(初の自力 WGSL)
+
+max-pooling は decode を NCHW で書くと**出力が最初から NCHW になり、並べ替え不要**
+(conv との構造的な違い)。backward を見越して窓内 argmax も保存する
+([`src/pooling.wgsl`](../src/pooling.wgsl))。
+
+**意図的に本と挙動を変えた点**: pad 領域を −∞ 扱い(max から除外)にした。本の CPU 版は
+im2col 流用のため 0 埋めで「窓内が全負のとき 0 が勝つ」— 標準的な max-pool の定義
+(PyTorch 等)は −∞ 側。DeepConvNet は pool pad=0 なので実運用の差は出ないが、
+pad>0 の CPU 突き合わせテストは成立しないため pad=0 に限定している。
+
+注意: argmax は u32 なので f32 前提の `GpuTensor::download` に入れてはいけない
+(bytemuck がビットパターンを f32 と誤読し、**黙って**無意味な数値になる)。
+
+## 12. DeepConvNet forward 全載せ — ×20〜28
+
+16 層(conv×6 + ReLU×7 相当 + pool×3 + affine×2)を同じ重みから CPU/GPU 両方で手組みし、
+ロジットを比較。**Flatten は GPU ではタダ**(pool 出力の NCHW 平坦バッファを
+そのまま (n, c·h·w) 行列と見なすだけ)。実測:
+
+```text
+batch 100: CPU 201 ms | GPU  9.8 ms | ×20.6   (logit 最大差 1e-5)
+batch 200: CPU 398 ms | GPU 14.3 ms | ×27.7
+```
+
+**全網の速度比(×20+)が matmul 単体の ×11 を上回った**のがポイント:
+
+- CPU の conv は「CPU で im2col(conv1_2 で 45MB の中間行列を実体化)→ dot」と
+  メモリを激しく往復するのに対し、GPU 版は im2col がカーネル内の添字計算に溶けている。
+- 転送は最初の画像(batch 100 で 300KB)上りとロジット 4KB 下りだけ。
+  6 章で見た「転送律速 ×0.56」の構造は**消滅**した。
+
+部品の比より系の比が良くなる — 常駐アーキテクチャの結論がここで完成する。
+
+## 13. 現在地と次の課題
+
+- 済み: 接続 / 往復 / 要素カーネル / vec4 matmul(×11)/ 常駐チェーン(×11.9)/
+  im2col / conv / pooling / **DeepConvNet forward 全載せ(×20〜28)**
+- 次: **backward の GPU 化**。col2im シェーダ、転置 matmul(dW = colᵀ·dout など)、
+  ReLU マスク、pooling は保存済み argmax で散布。iter 0.41 s の forward 分(~200ms)は
+  10ms になったので、backward も載れば **1 iter ~25〜40ms、20 エポック 82 分 → 5〜8 分**が
+  射程に入る。

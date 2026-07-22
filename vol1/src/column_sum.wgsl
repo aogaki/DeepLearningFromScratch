@@ -19,8 +19,6 @@ fn main(
     let col = group_id.x;
     let lid = local_id.x;
 
-    if (col >= dims.n) { return; }
-
     // ====== 第1幕: stride 分担の私的部分和 ======
     var sum = 0.0;
     // 対象列の m 行を 256 人で均等に手分けして縦に足し下ろす

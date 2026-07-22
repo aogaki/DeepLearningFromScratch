@@ -330,7 +330,7 @@ impl Gpu {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&self.matmul_tn_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(n.div_ceil(32) as u32, m.div_ceil(32) as u32, 1);
+            pass.dispatch_workgroups(m as u32, n as u32, 1);
         }
         self.queue.submit(Some(encoder.finish()));
 
@@ -974,9 +974,11 @@ impl Gpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        self.dispatch_1d(
-            &self.column_sum_pipeline,
-            &[
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.column_sum_pipeline.get_bind_group_layout(0),
+            entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: dims_buf.as_entire_binding(),
@@ -990,8 +992,20 @@ impl Gpu {
                     resource: out_buf.as_entire_binding(),
                 },
             ],
-            cols,
-        );
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&self.column_sum_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            // cols 列に対して cols 個のワークグループを起動 (1グループ256人体制)
+            pass.dispatch_workgroups(cols as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+
         GpuTensor {
             buffer: out_buf,
             shape: (1, cols),
@@ -1756,7 +1770,7 @@ mod tests {
         use ndarray::Axis;
         let gpu = Gpu::new();
 
-        for (rows, cols) in [(3, 7), (100, 50)] {
+        for (rows, cols) in [(3, 7), (100, 50), (1000, 7)] {
             let x: Array2<f32> = Array2::random((rows, cols), StandardNormal);
             let cpu_out = x
                 .sum_axis(Axis(0))

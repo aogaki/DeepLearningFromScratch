@@ -203,6 +203,7 @@ mod tests {
     use ndarray::{Axis, Ix4};
     use ndarray_rand::RandomExt;
     use ndarray_rand::rand_distr::StandardNormal;
+    use std::time::Instant;
 
     #[test]
     fn test_gpu_deep_conv_net() {
@@ -441,5 +442,214 @@ mod tests {
             last_loss
         );
         println!("Smoke test passed! Loss successfully decreased.");
+    }
+
+    #[test]
+    #[ignore] // 実行: cargo test --release train_mnist_deep_gpu_1epoch -- --ignored --nocapture
+    fn train_mnist_deep_gpu_1epoch() {
+        println!("Loading MNIST dataset...");
+        let x_train = load_images("dataset/train-images-idx3-ubyte")
+            .into_shape_with_order((60000, 1, 28, 28))
+            .unwrap();
+        let t_train = load_labels("dataset/train-labels-idx1-ubyte");
+
+        let x_test = load_images("dataset/t10k-images-idx3-ubyte")
+            .into_shape_with_order((10000, 1, 28, 28))
+            .unwrap();
+        let t_test = load_labels("dataset/t10k-labels-idx1-ubyte");
+
+        let gpu = Gpu::new();
+        let mut net = GpuDeepConvNet::new(&gpu);
+        let mut swl = SoftmaxWithLossLayer::new();
+
+        let train_size = x_train.shape()[0];
+        let batch_size = 100;
+        let max_iters = 600; // 1 epoch
+        let lr = 0.01f32;
+
+        let mut rng = rand::rng();
+
+        println!("--- Training GpuDeepConvNet (1 Epoch) ---");
+        // ロードと初期化を終えたここから計測開始
+        let loop_start_time = Instant::now();
+        let mut iter_start_time = Instant::now();
+
+        let mut first_losses = 0.0;
+        let mut last_losses = 0.0;
+
+        for i in 1..=max_iters {
+            // CPU: バッチインデックス抽出 & データ切り出し
+            let idx = rand::seq::index::sample(&mut rng, train_size, batch_size).into_vec();
+            let x_batch = x_train.select(Axis(0), &idx);
+            let batch_labels: Vec<u8> = idx.iter().map(|&j| t_train[j]).collect();
+            let t_batch = to_one_hot(&batch_labels, 10);
+
+            // GPU: 順伝播
+            let gx = gpu.upload_image(&x_batch);
+            let gout = net.forward(&gpu, &gx);
+
+            // GPU->CPU: logit のみダウンロードし CPU で Loss 算出
+            let logit = gpu.download(&gout);
+            let loss = swl.forward(logit, t_batch);
+
+            // 偽赤を防ぐ移動平均用の記録
+            if i <= 5 {
+                first_losses += loss;
+            }
+            if i > max_iters - 5 {
+                last_losses += loss;
+            }
+
+            if i % 100 == 0 || i == 1 {
+                let elapsed = iter_start_time.elapsed().as_secs_f32();
+                println!(
+                    "  iter {:3} | loss: {:.4} | Time(100iters): {:.2}s",
+                    i, loss, elapsed
+                );
+                iter_start_time = Instant::now();
+            }
+
+            // CPU: 逆伝播 (SoftmaxWithLoss)
+            let dx_cpu = swl.backward(1.0);
+
+            // CPU->GPU: dout アップロード, 逆伝播, 更新
+            let gdout = gpu.upload(&dx_cpu);
+            let _ = net.backward(&gpu, &gdout);
+            net.update(&gpu, lr);
+        }
+
+        // --- 時間解剖結果の出力 ---
+        let total_loop_time = loop_start_time.elapsed().as_secs_f32();
+        let s_per_iter = total_loop_time / max_iters as f32;
+        println!("\n=== Timing Results ===");
+        println!("1 Epoch Total Time: {:.2}s", total_loop_time);
+        println!(
+            "Seconds per iteration: {:.4}s (Target to beat: CPU ~0.41s)",
+            s_per_iter
+        );
+
+        // 論点1の修正版 Assert（5回平均で比較）
+        let avg_first = first_losses / 5.0;
+        let avg_last = last_losses / 5.0;
+        assert!(
+            avg_last < avg_first,
+            "Loss didn't decrease reliably: start_avg {:.4} -> end_avg {:.4}",
+            avg_first,
+            avg_last
+        );
+
+        // --- 精度測定 (先頭 1000 枚) ---
+        println!("\nEvaluating accuracy on 1000 test images...");
+        let test_subset_size = 1000;
+        let eval_batch_size = 100; // メモリ溢れ防止のため分割
+        let mut correct = 0;
+
+        for i in (0..test_subset_size).step_by(eval_batch_size) {
+            let end = (i + eval_batch_size).min(test_subset_size);
+            let x_batch = x_test.slice(ndarray::s![i..end, .., .., ..]).to_owned();
+
+            let gx = gpu.upload_image(&x_batch);
+            let gout = net.forward(&gpu, &gx);
+            let logit = gpu.download(&gout);
+
+            // CPU argmax 比較
+            for j in 0..(end - i) {
+                let mut max_val = f32::MIN;
+                let mut max_idx = 0;
+                for k in 0..10 {
+                    if logit[[j, k]] > max_val {
+                        max_val = logit[[j, k]];
+                        max_idx = k;
+                    }
+                }
+                if max_idx == t_test[i + j] as usize {
+                    correct += 1;
+                }
+            }
+        }
+
+        let accuracy = correct as f32 / test_subset_size as f32;
+        println!("Test Accuracy: {:.2}%\n", accuracy * 100.0);
+    }
+
+    #[test]
+    #[ignore] // 実行: cargo test --release test_gpu_timing_diagnostic -- --ignored --nocapture
+    fn test_gpu_timing_diagnostic() {
+        let x_train = load_images("dataset/train-images-idx3-ubyte")
+            .into_shape_with_order((60000, 1, 28, 28))
+            .unwrap();
+        let t_train = load_labels("dataset/train-labels-idx1-ubyte");
+
+        let gpu = Gpu::new();
+        let mut net = GpuDeepConvNet::new(&gpu);
+        let mut swl = SoftmaxWithLossLayer::new();
+
+        let batch_size = 100;
+        let max_iters = 50; // 50iter で十分傾向が出ます
+        let lr = 0.01f32;
+        let mut rng = rand::rng();
+
+        let mut total_forward_ms = 0.0;
+        let mut total_cpu_ms = 0.0;
+        let mut total_backward_ms = 0.0;
+        let mut total_update_ms = 0.0;
+
+        println!(
+            "--- Running GPU Timing Diagnostic ({} iters) ---",
+            max_iters
+        );
+
+        for _ in 1..=max_iters {
+            // --- 2. CPU 側 (前段: バッチ抽出と upload) ---
+            let cpu_start = Instant::now();
+            let idx = rand::seq::index::sample(&mut rng, 60000, batch_size).into_vec();
+            let x_batch = x_train.select(Axis(0), &idx);
+            let t_batch = to_one_hot(&idx.iter().map(|&j| t_train[j]).collect::<Vec<_>>(), 10);
+            let gx = gpu.upload_image(&x_batch);
+            let mut cpu_elapsed = cpu_start.elapsed().as_secs_f32() * 1000.0;
+
+            // --- 1. Forward (+ logits download による同期) ---
+            let fw_start = Instant::now();
+            let gout = net.forward(&gpu, &gx);
+            let logit = gpu.download(&gout); // ここで Forward 全体の完了待ち
+            total_forward_ms += fw_start.elapsed().as_secs_f32() * 1000.0;
+
+            // --- 2. CPU 側 (後段: SWL + dout upload) ---
+            let cpu_start2 = Instant::now();
+            let _ = swl.forward(logit, t_batch);
+            let dx_cpu = swl.backward(1.0);
+            let gdout = gpu.upload(&dx_cpu);
+            cpu_elapsed += cpu_start2.elapsed().as_secs_f32() * 1000.0;
+            total_cpu_ms += cpu_elapsed;
+
+            // --- 3. Backward (+ 強制同期) ---
+            let bw_start = Instant::now();
+            let _ = net.backward(&gpu, &gdout);
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("Poll failed"); // 完了を強制待ち
+            total_backward_ms += bw_start.elapsed().as_secs_f32() * 1000.0;
+
+            // --- 4. Update (+ 強制同期) ---
+            let up_start = Instant::now();
+            net.update(&gpu, lr);
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("Poll failed"); // 完了を強制待ち
+            total_update_ms += up_start.elapsed().as_secs_f32() * 1000.0;
+        }
+
+        println!("=== Cumulative Timing ({} iters) ===", max_iters);
+        println!("  1. Forward + DL : {:.2} ms", total_forward_ms);
+        println!("  2. CPU (SWL/Up) : {:.2} ms", total_cpu_ms);
+        println!("  3. Backward     : {:.2} ms", total_backward_ms);
+        println!("  4. Update       : {:.2} ms", total_update_ms);
+
+        let total_ms = total_forward_ms + total_cpu_ms + total_backward_ms + total_update_ms;
+        println!("  Total Measured  : {:.2} ms", total_ms);
+        println!(
+            "  Per Iteration   : {:.2} ms/iter",
+            total_ms / max_iters as f32
+        );
     }
 }

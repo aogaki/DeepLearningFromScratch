@@ -50,6 +50,7 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
 
 ## 現在地(詳細な経過は Auto Memory に任せる)
 - **vol1**: 8.1 完了(Layer トレイト + Vec<Box<dyn Layer>> の DeepConvNet、MNIST 99.32%)。
-  wgpu 進行中(src/gpu.rs): vec4 matmul ×11、im2col/conv/pooling シェーダ完備、
-  DeepConvNet forward 全載せ(batch200 で CPU比 ×27.7)。次は backward の GPU 化。
+  wgpu 進行中(src/gpu.rs): forward 全載せ(CPU比 ×27.7)+ backward 全部品完成
+  (conv backward まで CPU と exact 一致)。次は GpuConvLayer 設計 → 全網 backward 組み立て
+  → SGD カーネル → GPU 学習ループ → 最終ベンチ(詳細は Auto Memory の wgpu-v30-api-notes)。
 - vol2〜vol5: 未着手。

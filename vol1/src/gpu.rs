@@ -1,3 +1,5 @@
+pub mod layers;
+
 use ndarray::{Array2, Array4};
 use wgpu::{Device, Queue, util::DeviceExt};
 
@@ -14,12 +16,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+#[derive(Clone)]
 pub struct GpuTensor {
     pub buffer: wgpu::Buffer,
     pub shape: (usize, usize),
 }
 
 /// GPU 常駐の 4D 画像(NCHW 平坦の GpuTensor + 元の形)
+#[derive(Clone)]
 pub struct GpuImage {
     pub tensor: GpuTensor,                  // shape = (n, c·h·w)
     pub dims: (usize, usize, usize, usize), // (n, c, h, w)
@@ -39,7 +43,9 @@ pub struct Gpu {
     pooling_pipeline: wgpu::ComputePipeline,
     pool_backward_pipeline: wgpu::ComputePipeline,
     matmul_tn_pipeline: wgpu::ComputePipeline,
+    matmul_nt_pipeline: wgpu::ComputePipeline,
     column_sum_pipeline: wgpu::ComputePipeline,
+    sgd_pipeline: wgpu::ComputePipeline,
 }
 impl Gpu {
     pub fn new() -> Self {
@@ -71,6 +77,9 @@ impl Gpu {
             Self::make_pipeline(&device, include_str!("matmul_tn.wgsl"), "matmul_tn");
         let column_sum_pipeline =
             Self::make_pipeline(&device, include_str!("column_sum.wgsl"), "column_sum");
+        let matmul_nt_pipeline =
+            Self::make_pipeline(&device, include_str!("matmul_nt.wgsl"), "matmul_nt");
+        let sgd_pipeline = Self::make_pipeline(&device, include_str!("sgd.wgsl"), "sgd");
 
         Gpu {
             device,
@@ -86,7 +95,9 @@ impl Gpu {
             pooling_pipeline,
             pool_backward_pipeline,
             matmul_tn_pipeline,
+            matmul_nt_pipeline,
             column_sum_pipeline,
+            sgd_pipeline,
         }
     }
 
@@ -321,6 +332,64 @@ impl Gpu {
             pass.dispatch_workgroups(n.div_ceil(32) as u32, m.div_ceil(32) as u32, 1);
         }
         self.queue.submit(Some(encoder.finish()));
+
+        GpuTensor {
+            buffer: out_buf,
+            shape: (m, n),
+        }
+    }
+
+    /// C(m,n) = A(m,k) · B(n,k)ᵀ
+    /// a と b 共に k 方向が連続であることを利用し、転置を事前実体化せずに計算する
+    pub fn matmul_nt_gpu(&self, a: &GpuTensor, b: &GpuTensor) -> GpuTensor {
+        let (m, k) = a.shape;
+        let (n, k2) = b.shape;
+        assert_eq!(k, k2, "matmul_nt_gpu: k dimensions must match");
+
+        let dims: [u32; 4] = [m as u32, k as u32, n as u32, 0];
+        let dims_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("matmul_nt dims"),
+                contents: bytemuck::cast_slice(&dims),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("matmul_nt out"),
+            size: (m * n * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let block_x = 16;
+        let block_y = 16;
+        let grid_x = (n as u32).div_ceil(block_x);
+        let grid_y = (m as u32).div_ceil(block_y);
+
+        // dispatch_2d ヘルパーを呼び出す
+        self.dispatch_2d(
+            &self.matmul_nt_pipeline,
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dims_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: a.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: b.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: out_buf.as_entire_binding(),
+                },
+            ],
+            (grid_x, grid_y),
+        );
 
         GpuTensor {
             buffer: out_buf,
@@ -696,7 +765,7 @@ impl Gpu {
         &self,
         dout: &GpuImage,
         col: &GpuTensor,
-        w_col: &GpuTensor,
+        w_colt: &GpuTensor,
         input_dims: (usize, usize, usize, usize),
         fh: usize,
         fw: usize,
@@ -709,7 +778,7 @@ impl Gpu {
 
         let db = self.column_sum_gpu(&dout2d);
 
-        let dcol = self.matmul_gpu(&dout2d, w_col);
+        let dcol = self.matmul_nt_gpu(&dout2d, w_colt);
 
         let dx = self.col2im_gpu(&dcol, input_dims, fh, fw, stride, pad);
 
@@ -943,6 +1012,42 @@ impl Gpu {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: act.buffer.as_entire_binding(),
+                },
+            ],
+            n,
+        );
+    }
+
+    /// SGD (param = param - lr * grad)
+    /// 要素ごとの in-place 更新
+    pub fn sgd_update_gpu(&self, param: &mut GpuTensor, grad: &GpuTensor, lr: f32) {
+        // バインドグループは形状不一致でも黙って通ってしまうため、ここで防ぐ
+        assert_eq!(param.shape, grad.shape, "sgd_update_gpu: shape mismatch");
+        let n = param.shape.0 * param.shape.1;
+
+        // 4バイトの f32 スカラーをそのまま uniform バッファとして確保
+        let lr_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("sgd lr"),
+                contents: bytemuck::cast_slice(&[lr]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        self.dispatch_1d(
+            &self.sgd_pipeline, // ※ new() 内での make_pipeline 登録前提
+            &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: lr_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: param.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: grad.buffer.as_entire_binding(),
                 },
             ],
             n,
@@ -1889,18 +1994,20 @@ mod tests {
         let gx = gpu.upload_image(&x);
         let gcol = gpu.im2col_gpu(&gx, fh, fw, stride, pad);
 
-        // 2. w_col を「元の向き (fn, c*fh*fw)」でアップロード (dcol 計算用)
-        let w_col_cpu = w_arr
+        // 2. w_col を「順伝搬の向き (c*fh*fw, fn_)」でアップロード (dcol 計算用)
+        let w_2d = w_arr
             .clone()
             .into_shape_with_order((fn_, c * fh * fw))
             .unwrap();
-        let gw_col = gpu.upload(&w_col_cpu);
+        let mut w_colt_cpu = ndarray::Array2::<f32>::zeros((c * fh * fw, fn_));
+        w_colt_cpu.assign(&w_2d.t());
+        let gw_colt = gpu.upload(&w_colt_cpu);
 
         let gdout = gpu.upload_image(&dout);
 
         // 3. backward 一括処理
         let (gdx_img, gdw_colt, gdb) =
-            gpu.conv_backward_gpu(&gdout, &gcol, &gw_col, (n, c, h, w), fh, fw, stride, pad);
+            gpu.conv_backward_gpu(&gdout, &gcol, &gw_colt, (n, c, h, w), fh, fw, stride, pad);
 
         let gpu_dx = gpu.download(&gdx_img.tensor);
         let gpu_dw_colt = gpu.download(&gdw_colt);
@@ -1941,5 +2048,75 @@ mod tests {
             .map(|(c, g)| (c - g).abs())
             .fold(0.0f32, f32::max);
         assert!(diff_db < 1e-3, "db diff: {diff_db:e}");
+    }
+
+    #[test]
+    fn test_sgd_update_gpu() {
+        let gpu = Gpu::new();
+        let (rows, cols) = (100, 50);
+        let lr = 0.01f32;
+
+        let mut param_cpu = Array2::random((rows, cols), StandardNormal);
+        let grad = Array2::random((rows, cols), StandardNormal);
+        let param_cpu_orig = param_cpu.clone();
+
+        // --- CPU ---
+        ndarray::Zip::from(&mut param_cpu)
+            .and(&grad)
+            .for_each(|p, &g| *p -= lr * g);
+
+        // --- GPU ---
+        let mut gparam = gpu.upload(&param_cpu_orig);
+        let ggrad = gpu.upload(&grad);
+
+        gpu.sgd_update_gpu(&mut gparam, &ggrad, lr);
+
+        let gpu_param = gpu.download(&gparam);
+
+        // --- 比較 ---
+        let max_diff = param_cpu
+            .iter()
+            .zip(gpu_param.iter())
+            .map(|(c, g)| (c - g).abs())
+            .fold(0.0f32, f32::max);
+
+        // FMA (Fused Multiply-Add) 最適化の有無により、CPUとGPUで 1 ULP (1.192e-7) の差異が生じる。
+        // 加算順序の変動がなくても完全一致(exact)にはならないため、マシンエプシロン相当の許容誤差を設ける。
+        assert!(
+            max_diff < 1e-6,
+            "SGD update diff is too large: {max_diff:e}"
+        );
+    }
+
+    #[test]
+    fn test_matmul_nt_gpu() {
+        let gpu = Gpu::new();
+        let m = 100;
+        let k = 50;
+        let n = 30;
+
+        let a = Array2::random((m, k), StandardNormal);
+        let b = Array2::random((n, k), StandardNormal);
+
+        // --- CPU ---
+        // A * B^T
+        let cpu_c = a.dot(&b.t());
+
+        // --- GPU ---
+        let ga = gpu.upload(&a);
+        let gb = gpu.upload(&b);
+        let gc = gpu.matmul_nt_gpu(&ga, &gb);
+        let gpu_c = gpu.download(&gc);
+
+        // --- 比較 ---
+        let max_diff = cpu_c
+            .iter()
+            .zip(gpu_c.iter())
+            .map(|(c, g)| (c - g).abs())
+            .fold(0.0f32, f32::max);
+
+        // 蓄積演算（dot/sum）が大量に含まれており、加算順序がCPUの実装と
+        // WGSLのナイーブな4並列+スカラー処理とで全く異なるため、完全一致はしない。
+        assert!(max_diff < 1e-3, "matmul_nt diff is too large: {max_diff:e}");
     }
 }

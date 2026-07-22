@@ -1,9 +1,9 @@
 # DL — 『ゼロから作る Deep Learning』シリーズの Rust 移植(学習用)
 
 ## このプロジェクトの目的
-斎藤康毅『ゼロから作る Deep Learning』(オライリー・ジャパン)全5巻を、Python+NumPy から
+斎藤康毅『ゼロから作る Deep Learning』(オライリー・ジャパン)全6巻を、Python+NumPy から
 Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書いて理解すること」が目的。
-各巻を1つの Cargo クレート(`vol1`〜`vol5`)として、巻ごとに独立に実装する
+各巻を1つの Cargo クレート(`vol1`〜`vol6`)として、巻ごとに独立に実装する
 (共有クレートは作らず、必要なものは各巻で再実装する — 写経して理解するため)。
 
 ## Claude の役割(最重要)
@@ -38,7 +38,7 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
 ## リポジトリ構造
 - ルート `/Users/aogaki/Study/DeepLearningFromScratch` は **Cargo ワークスペース**(`resolver = "3"`)。
   `Cargo.lock` と `target/` を全巻で共有する。
-- 各巻は独立クレート `vol1/`〜`vol5/`。新しい巻は `cargo new volN --lib` で作り、
+- 各巻は独立クレート `vol1/`〜`vol6/`。新しい巻は `cargo new volN --lib` で作り、
   ルート `Cargo.toml` の `members` に追加する。
 - 本の PDF は `books/volN.pdf`(gitignore 済み。Claude が参照するときは Read が必要)。
 - データセットや変換後の重みは各巻の `dataset/` 配下(gitignore 済み。再取得可能)。
@@ -49,8 +49,8 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
 - `println!` を表示したいテスト: `cargo test -- --nocapture`
 
 ## 現在地(詳細な経過は Auto Memory に任せる)
-- **vol1**: 8.1 完了(Layer トレイト + Vec<Box<dyn Layer>> の DeepConvNet、MNIST 99.32%)。
-  wgpu 進行中(src/gpu.rs): forward 全載せ(CPU比 ×27.7)+ backward 全部品完成
-  (conv backward まで CPU と exact 一致)。次は GpuConvLayer 設計 → 全網 backward 組み立て
-  → SGD カーネル → GPU 学習ループ → 最終ベンチ(詳細は Auto Memory の wgpu-v30-api-notes)。
-- vol2〜vol5: 未着手。
+- **vol1: 完了(2026-07-22)**。本編 8.1 まで(DeepConvNet、MNIST 99.32%)+ wgpu GPU 化の
+  独自拡張を完走: 全網 forward/backward/Adam を GPU 常駐(WGSL 17 本)、カーネル最適化 3 段で
+  1 iter 0.41 s → 21.8 ms(×18.8)、20 epoch 82 分 → 4.5 分、テスト精度 99.41% peak で
+  CPU 版とパリティ。物語は `vol1/docs/wgpu-journey.md`(全21章)。
+- vol2〜vol6: 未着手。次巻は vol2(自然言語処理)か vol3(フレームワーク/DeZero)を選定中。

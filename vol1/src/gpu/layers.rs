@@ -14,6 +14,8 @@ pub struct GpuConvLayer {
     // 勾配(update ステップが後で食う)
     dw_colt: Option<GpuTensor>,
     db: Option<GpuTensor>,
+    opt_w_adam: crate::gpu::GpuAdam,
+    opt_b_adam: crate::gpu::GpuAdam,
 }
 impl GpuConvLayer {
     pub fn new(gpu: &Gpu, w: &Array4<f32>, b: &Array1<f32>, stride: usize, pad: usize) -> Self {
@@ -42,6 +44,8 @@ impl GpuConvLayer {
             input_dims: None,
             dw_colt: None,
             db: None,
+            opt_w_adam: crate::gpu::GpuAdam::new(),
+            opt_b_adam: crate::gpu::GpuAdam::new(),
         }
     }
 
@@ -103,6 +107,20 @@ impl GpuConvLayer {
 
         gpu.sgd_update_gpu(&mut self.w_colt, dw_colt, lr);
         gpu.sgd_update_gpu(&mut self.b, db, lr);
+    }
+
+    pub fn update_adam(&mut self, gpu: &Gpu, lr: f32) {
+        let dw_colt = self
+            .dw_colt
+            .as_ref()
+            .expect("backward must be called before update");
+        let db = self
+            .db
+            .as_ref()
+            .expect("backward must be called before update");
+
+        self.opt_w_adam.update(gpu, &mut self.w_colt, dw_colt, lr);
+        self.opt_b_adam.update(gpu, &mut self.b, db, lr);
     }
 
     pub fn w_colt(&self) -> &GpuTensor {
@@ -218,6 +236,8 @@ pub struct GpuAffineLayer {
     x: Option<GpuTensor>, // forward 時の入力キャッシュ
     dw: Option<GpuTensor>,
     db: Option<GpuTensor>,
+    opt_w_adam: crate::gpu::GpuAdam,
+    opt_b_adam: crate::gpu::GpuAdam,
 }
 impl GpuAffineLayer {
     pub fn new(gpu: &Gpu, w: &Array2<f32>, b: &Array2<f32>) -> Self {
@@ -231,6 +251,8 @@ impl GpuAffineLayer {
             x: None,
             dw: None,
             db: None,
+            opt_w_adam: crate::gpu::GpuAdam::new(),
+            opt_b_adam: crate::gpu::GpuAdam::new(),
         }
     }
 
@@ -269,6 +291,14 @@ impl GpuAffineLayer {
 
         gpu.sgd_update_gpu(&mut self.w, dw, lr);
         gpu.sgd_update_gpu(&mut self.b, db, lr);
+    }
+
+    pub fn update_adam(&mut self, gpu: &Gpu, lr: f32) {
+        let dw = self.dw.as_ref().expect("backward must be called first");
+        let db = self.db.as_ref().expect("backward must be called first");
+
+        self.opt_w_adam.update(gpu, &mut self.w, dw, lr);
+        self.opt_b_adam.update(gpu, &mut self.b, db, lr);
     }
 
     pub fn w(&self) -> &GpuTensor {

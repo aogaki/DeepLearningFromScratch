@@ -192,6 +192,17 @@ impl GpuDeepConvNet {
         self.af1.update(gpu, lr);
         self.af2.update(gpu, lr);
     }
+
+    pub fn update_adam(&mut self, gpu: &Gpu, lr: f32) {
+        self.c1_1.update_adam(gpu, lr);
+        self.c1_2.update_adam(gpu, lr);
+        self.c2_1.update_adam(gpu, lr);
+        self.c2_2.update_adam(gpu, lr);
+        self.c3_1.update_adam(gpu, lr);
+        self.c3_2.update_adam(gpu, lr);
+        self.af1.update_adam(gpu, lr);
+        self.af2.update_adam(gpu, lr);
+    }
 }
 
 #[cfg(test)]
@@ -763,6 +774,126 @@ mod tests {
                 );
                 epoch_start_time = Instant::now();
                 iter_start_time = Instant::now(); // リセット
+            }
+        }
+
+        println!("=== Training Complete ===");
+        println!(
+            "Total Time: {:.2}s",
+            total_start_time.elapsed().as_secs_f32()
+        );
+    }
+
+    #[test]
+    #[ignore] // cargo test --release test_train_mnist_deep_gpu_adam -- --ignored --nocapture
+    fn test_train_mnist_deep_gpu_adam() {
+        use crate::layers::SoftmaxWithLossLayer;
+        use ndarray::Axis;
+        use std::time::Instant;
+
+        println!("Loading MNIST dataset...");
+        let x_train = load_images("dataset/train-images-idx3-ubyte")
+            .into_shape_with_order((60000, 1, 28, 28))
+            .unwrap();
+        let t_train = load_labels("dataset/train-labels-idx1-ubyte");
+
+        let x_test = load_images("dataset/t10k-images-idx3-ubyte")
+            .into_shape_with_order((10000, 1, 28, 28))
+            .unwrap();
+        let t_test = load_labels("dataset/t10k-labels-idx1-ubyte");
+
+        let gpu = Gpu::new();
+        let mut net = GpuDeepConvNet::new(&gpu);
+        let mut swl = SoftmaxWithLossLayer::new();
+
+        let train_size = x_train.shape()[0];
+        let test_size = x_test.shape()[0];
+        let batch_size = 100;
+        let max_epochs = 20;
+        let iter_per_epoch = (train_size / batch_size).max(1);
+        let iters_num = iter_per_epoch * max_epochs;
+        let lr = 0.001f32; // Adam uses 0.001
+
+        let mut rng = rand::rng();
+
+        println!("--- Training GpuDeepConvNet (Adam) ---");
+        println!(
+            "Max Epochs: {}, Batch Size: {}, Total Iters: {}",
+            max_epochs, batch_size, iters_num
+        );
+        println!(
+            "(Run with: cargo test --release test_train_mnist_deep_gpu_adam -- --ignored --nocapture)"
+        );
+
+        let total_start_time = Instant::now();
+        let mut epoch_start_time = Instant::now();
+        let mut iter_start_time = Instant::now();
+
+        for i in 1..=iters_num {
+            let idx = rand::seq::index::sample(&mut rng, train_size, batch_size).into_vec();
+            let x_batch = x_train.select(Axis(0), &idx);
+            let batch_labels: Vec<u8> = idx.iter().map(|&j| t_train[j]).collect();
+            let t_batch = to_one_hot(&batch_labels, 10);
+
+            let gx = gpu.upload_image(&x_batch);
+            let gout = net.forward(&gpu, &gx);
+            let logit = gpu.download(&gout);
+
+            let loss = swl.forward(logit, t_batch);
+            let dx_cpu = swl.backward(1.0);
+
+            let gdout = gpu.upload(&dx_cpu);
+            let _ = net.backward(&gpu, &gdout);
+            net.update_adam(&gpu, lr); // Adam update
+
+            if i % 100 == 0 {
+                let elapsed = iter_start_time.elapsed().as_secs_f32();
+                println!(
+                    "  iter {:5} | loss: {:.4} | Time(100iters): {:.2}s",
+                    i, loss, elapsed
+                );
+                iter_start_time = Instant::now();
+            }
+
+            if i % iter_per_epoch == 0 {
+                let current_epoch = i / iter_per_epoch;
+                let mut correct_count = 0;
+                let test_batch_size = 100;
+                let test_iters = test_size / test_batch_size;
+
+                for j in 0..test_iters {
+                    let start = j * test_batch_size;
+                    let end = start + test_batch_size;
+                    let x_test_batch = x_test.slice(ndarray::s![start..end, .., .., ..]).to_owned();
+
+                    let gx_test = gpu.upload_image(&x_test_batch);
+                    let gout_test = net.forward(&gpu, &gx_test);
+                    let logit_test = gpu.download(&gout_test);
+
+                    for (b, row) in logit_test.outer_iter().enumerate() {
+                        let pred = row
+                            .iter()
+                            .enumerate()
+                            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                            .map(|(idx, _)| idx)
+                            .unwrap();
+                        let actual = t_test[start + b] as usize;
+                        if pred == actual {
+                            correct_count += 1;
+                        }
+                    }
+                }
+
+                let test_acc = correct_count as f32 / test_size as f32;
+                let epoch_elapsed = epoch_start_time.elapsed().as_secs_f32();
+                println!("=== Epoch {} / {} Complete ===", current_epoch, max_epochs);
+                println!(
+                    "  Test Accuracy: {:.2}% | Epoch Time: {:.2}s",
+                    test_acc * 100.0,
+                    epoch_elapsed
+                );
+                epoch_start_time = Instant::now();
+                iter_start_time = Instant::now();
             }
         }
 

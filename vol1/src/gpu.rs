@@ -47,6 +47,7 @@ pub struct Gpu {
     matmul_nt_pipeline: wgpu::ComputePipeline,
     column_sum_pipeline: wgpu::ComputePipeline,
     sgd_pipeline: wgpu::ComputePipeline,
+    pub adam_pipeline: wgpu::ComputePipeline,
 }
 impl Gpu {
     pub fn new() -> Self {
@@ -81,6 +82,7 @@ impl Gpu {
         let matmul_nt_pipeline =
             Self::make_pipeline(&device, include_str!("matmul_nt.wgsl"), "matmul_nt");
         let sgd_pipeline = Self::make_pipeline(&device, include_str!("sgd.wgsl"), "sgd");
+        let adam_pipeline = Self::make_pipeline(&device, include_str!("adam.wgsl"), "adam");
 
         Gpu {
             device,
@@ -99,6 +101,7 @@ impl Gpu {
             matmul_nt_pipeline,
             column_sum_pipeline,
             sgd_pipeline,
+            adam_pipeline,
         }
     }
 
@@ -1067,6 +1070,97 @@ impl Gpu {
             ],
             n,
         );
+    }
+}
+
+pub struct GpuAdam {
+    iter: i32,
+    m: Option<GpuTensor>,
+    v: Option<GpuTensor>,
+}
+
+impl GpuAdam {
+    pub fn new() -> Self {
+        Self {
+            iter: 0,
+            m: None,
+            v: None,
+        }
+    }
+
+    pub fn update(&mut self, gpu: &Gpu, param: &mut GpuTensor, grad: &GpuTensor, lr: f32) {
+        use wgpu::util::DeviceExt;
+        self.iter += 1;
+        let elements = param.shape.0 * param.shape.1;
+
+        let m = self.m.get_or_insert_with(|| {
+            let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("adam_m"),
+                size: (elements * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            GpuTensor { buffer, shape: param.shape }
+        });
+
+        let v = self.v.get_or_insert_with(|| {
+            let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("adam_v"),
+                size: (elements * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            GpuTensor { buffer, shape: param.shape }
+        });
+
+        let beta1 = 0.9f32;
+        let beta2 = 0.999f32;
+        let c1 = 1.0 / (1.0 - beta1.powi(self.iter));
+        let c2 = 1.0 / (1.0 - beta2.powi(self.iter));
+
+        let uniforms = [lr, c1, c2, 0.0f32];
+        let uniform_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("adam_uniforms"),
+            contents: bytemuck::cast_slice(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let bind_group_layout = gpu.adam_pipeline.get_bind_group_layout(0);
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("adam_bind_group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: param.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: grad.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: m.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: v.buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&gpu.adam_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(elements.div_ceil(64) as u32, 1, 1);
+        }
+        gpu.queue.submit(Some(encoder.finish()));
     }
 }
 
@@ -2133,5 +2227,35 @@ mod tests {
         // 蓄積演算（dot/sum）が大量に含まれており、加算順序がCPUの実装と
         // WGSLのナイーブな4並列+スカラー処理とで全く異なるため、完全一致はしない。
         assert!(max_diff < 1e-3, "matmul_nt diff is too large: {max_diff:e}");
+    }
+
+    #[test]
+    fn test_gpu_adam() {
+        use crate::optimizer::{Adam, Optimizer};
+        let gpu = Gpu::new();
+        
+        let mut param_cpu = Array2::random((10, 10), StandardNormal).into_dyn();
+        let mut param_gpu = gpu.upload(&param_cpu.clone().into_dimensionality::<ndarray::Ix2>().unwrap());
+        
+        let mut adam_cpu = Adam::new(0.01);
+        let mut adam_gpu = GpuAdam::new();
+        
+        for i in 0..3 {
+            let grad_cpu = Array2::random((10, 10), StandardNormal).into_dyn();
+            let grad_gpu = gpu.upload(&grad_cpu.clone().into_dimensionality::<ndarray::Ix2>().unwrap());
+            
+            adam_cpu.update(&mut param_cpu.view_mut(), &grad_cpu.view());
+            adam_gpu.update(&gpu, &mut param_gpu, &grad_gpu, 0.01);
+            
+            let downloaded = gpu.download(&param_gpu);
+            
+            let max_diff = param_cpu
+                .iter()
+                .zip(downloaded.iter())
+                .map(|(c, g)| (c - g).abs())
+                .fold(0.0f32, f32::max);
+
+            assert!(max_diff < 1e-6, "Adam mismatch at step {}: diff={:e}", i, max_diff);
+        }
     }
 }

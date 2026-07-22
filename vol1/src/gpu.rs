@@ -1,3 +1,4 @@
+pub mod deep_conv_net;
 pub mod layers;
 
 use ndarray::{Array2, Array4};

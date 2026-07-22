@@ -104,6 +104,26 @@ impl GpuConvLayer {
         gpu.sgd_update_gpu(&mut self.w_colt, dw_colt, lr);
         gpu.sgd_update_gpu(&mut self.b, db, lr);
     }
+
+    pub fn w_colt(&self) -> &GpuTensor {
+        &self.w_colt
+    }
+
+    pub fn dw_colt(&self) -> &GpuTensor {
+        self.dw_colt
+            .as_ref()
+            .expect("backward must be called before accessing dw")
+    }
+
+    pub fn b(&self) -> &GpuTensor {
+        &self.b
+    }
+
+    pub fn db(&self) -> &GpuTensor {
+        self.db
+            .as_ref()
+            .expect("backward must be called before accessing db")
+    }
 }
 
 pub struct GpuReluLayer {
@@ -249,6 +269,26 @@ impl GpuAffineLayer {
 
         gpu.sgd_update_gpu(&mut self.w, dw, lr);
         gpu.sgd_update_gpu(&mut self.b, db, lr);
+    }
+
+    pub fn w(&self) -> &GpuTensor {
+        &self.w
+    }
+
+    pub fn dw(&self) -> &GpuTensor {
+        self.dw
+            .as_ref()
+            .expect("backward must be called before accessing dw")
+    }
+
+    pub fn b(&self) -> &GpuTensor {
+        &self.b
+    }
+
+    pub fn db(&self) -> &GpuTensor {
+        self.db
+            .as_ref()
+            .expect("backward must be called before accessing db")
     }
 }
 

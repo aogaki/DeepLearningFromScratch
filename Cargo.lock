@@ -1097,6 +1097,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vol3"
+version = "0.1.0"
+dependencies = [
+ "ndarray",
+ "ndarray-rand",
+]
+
+[[package]]
 name = "wasip2"
 version = "1.0.4+wasi-0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,4 +1,4 @@
 [workspace]
 resolver = "3"
-members = ["vol1"]
+members = ["vol1", "vol3"]
 # 新しい巻を追加したら members に "vol2", "vol3", ... と足す

@@ -53,8 +53,10 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   独自拡張を完走: 全網 forward/backward/Adam を GPU 常駐(WGSL 17 本)、カーネル最適化 3 段で
   1 iter 0.41 s → 21.8 ms(×18.8)、20 epoch 82 分 → 4.5 分、テスト精度 99.41% peak で
   CPU 版とパリティ。物語は `vol1/docs/wgpu-journey.md`(全21章)。
-- **vol3: 進行中(2026-07-23 開始)**。第1ステージ(ステップ1〜10)完了。設計の要点:
+- **vol3: 進行中(2026-07-23 開始)**。第2ステージ(ステップ1〜24)完了。設計の要点:
   `Variable` は `Rc<RefCell>` の薄いハンドル、trait は Forward/Function/Creator に3分割、
-  `call(self)` が関数を `Node<F>` としてグラフへ移す、数値微分の刻みは f32 用に eps=5e-3(∛ε)。
-  次はステップ11(可変長引数 — Add の登場、`Node` の入力が `Vec` になる)。
+  `call(self)` が関数を `Node<F>` としてグラフへ移す、数値微分の刻みは f32 用に eps=5e-3(∛ε)、
+  世代管理つき backward、thread_local の no_grad、演算子はマクロで4通り+スカラー混合。
+  モジュール構成: variable/function/functions/config/macros/utils + tests/(ステップ実例)。
+  次はステップ25〜(第3ステージ: 計算グラフ可視化と高階微分)。
 - vol2・vol4〜vol6: 未着手(vol2 は個人的興味の巻として後回し、vol3 を先行)。

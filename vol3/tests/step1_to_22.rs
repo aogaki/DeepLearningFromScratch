@@ -107,7 +107,7 @@ fn test_auto_backward() {
     let y = x.square().exp().square();
 
     // ステップ7の自動逆伝播！
-    y.backward(false);
+    y.backward(false, false);
 
     let expected_grad = array![[3.2974426f32]].into_dyn();
     assert!(approx_equal_arrayd(
@@ -124,7 +124,7 @@ fn test_gradient_check() {
     let x = Variable::new(array![[0.5f32]].into_dyn());
 
     let y = x.square();
-    y.backward(false);
+    y.backward(false, false);
     let analytical_grad = x.grad().unwrap();
 
     let num_grad_var = numerical_diff(Square, &x, EPSILON_FOR_DIFF);
@@ -139,7 +139,7 @@ fn test_gradient_check_composite() {
     let x = Variable::new(array![[0.5f32]].into_dyn());
 
     let y = x.square().exp().square();
-    y.backward(false);
+    y.backward(false, false);
     let analytical_grad = x.grad().unwrap();
 
     let f = |xs: &[ArrayD<f32>]| {
@@ -173,7 +173,7 @@ fn test_add_backward() {
 
     // z = x^2 + y^2
     let z = x.square().add(&y.square());
-    z.backward(false);
+    z.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &x.grad().unwrap(),
@@ -191,7 +191,7 @@ fn test_add_backward() {
 fn test_add_same_variable() {
     let x = Variable::new(array![[3.0f32]].into_dyn());
     let y = x.add(&x);
-    y.backward(false);
+    y.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &x.grad().unwrap(),
@@ -202,7 +202,7 @@ fn test_add_same_variable() {
     x.cleargrad();
 
     let y2 = x.add(&x).add(&x);
-    y2.backward(false);
+    y2.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &x.grad().unwrap(),
@@ -220,7 +220,7 @@ fn test_complex_graph_step16() {
     let a = x.square();
     let y = a.square().add(&a.square());
 
-    y.backward(false);
+    y.backward(false, false);
 
     // 正解は dy/dx = 8x^3 = 64.0。世代管理により正しく計算される。
     assert!(approx_equal_arrayd(
@@ -236,7 +236,7 @@ fn test_retain_grad() {
     let a = x.square();
     let y = a.square();
 
-    y.backward(false);
+    y.backward(false, false);
     assert!(a.grad().is_none(), "中間変数の勾配は破棄されるべき");
     assert!(x.grad().is_some(), "葉変数の勾配は保持されるべき");
 
@@ -244,7 +244,7 @@ fn test_retain_grad() {
 
     let a2 = x.square();
     let y2 = a2.square();
-    y2.backward(true);
+    y2.backward(true, false);
     assert!(
         a2.grad().is_some(),
         "retain_grad=true時は中間変数も保持されるべき"
@@ -278,7 +278,7 @@ fn test_operator_overloading_step20() {
     // y = a * b + c
     // 葉の変数は参照(&a, &b, &c)として渡し、途中の一時変数はムーブさせる(所有権の活用)
     let y = &a * &b + &c;
-    y.backward(false);
+    y.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &y.data(),
@@ -304,7 +304,7 @@ fn test_operator_overloading_scalar_step21() {
 
     // 3.0 * x + 1.0
     let y = 3.0 * &x + 1.0;
-    y.backward(false);
+    y.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &y.data(),
@@ -348,7 +348,7 @@ fn test_operator_overloading_step22() {
 
     // Pow
     let y4 = x.powf(3.0);
-    y4.backward(false);
+    y4.backward(false, false);
     assert!(approx_equal_arrayd(
         &y4.data(),
         &array![[8.0f32]].into_dyn(),
@@ -370,7 +370,7 @@ fn test_backward_gradients_step22() {
     let a = Variable::new(array![[3.0f32]].into_dyn());
     let b = Variable::new(array![[2.0f32]].into_dyn());
     let y_sub = &a - &b;
-    y_sub.backward(false);
+    y_sub.backward(false, false);
 
     let b_data = b.data();
     let f_sub_a = |xs: &[ArrayD<f32>]| &xs[0] - &b_data;
@@ -392,7 +392,7 @@ fn test_backward_gradients_step22() {
     let a2 = Variable::new(array![[3.0f32]].into_dyn());
     let b2 = Variable::new(array![[2.0f32]].into_dyn());
     let y_div = &a2 / &b2;
-    y_div.backward(false);
+    y_div.backward(false, false);
 
     let b2_data = b2.data();
     let f_div_a = |xs: &[ArrayD<f32>]| &xs[0] / &b2_data;

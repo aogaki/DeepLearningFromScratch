@@ -63,6 +63,12 @@ fn dot_func(func_id: usize, label: &str) -> String {
     )
 }
 
+/// 本 ステップ26「計算グラフの可視化」— 出力変数から遡って DOT 言語のテキストを作る。
+///
+/// 遡行は backward と同型だが、描くだけなので世代ソートは不要(seen による重複排除のみ)。
+/// ノード ID は `Variable::id()`(Rc のポインタ)と creator の thin pointer を使う。
+/// レンダリングの目安: `dot` コマンドが実用的なのは数千ノードまで(tanh の8階微分
+/// ≈ 1.5万ノードで破綻する — examples/step35.rs の顛末を参照)。
 pub fn get_dot_graph(output: &Variable, verbose: bool) -> String {
     let mut txt = String::from("digraph g {\n");
     let mut queue = vec![];

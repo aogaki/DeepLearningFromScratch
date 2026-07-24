@@ -1,21 +1,42 @@
+use crate::config::no_grad;
 use crate::function::Creator;
 use crate::function::Function;
-use crate::functions::{Add, Div, Exp, Mul, Neg, Pow, Sin, Square, Sub};
+use crate::functions::{Add, Cos, Div, Exp, Mul, Neg, Pow, Sin, Square, Sub, Tanh};
 use ndarray::ArrayD;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
+/// `Variable` の実体。グラフ上で共有されるため、常に `Rc<RefCell>` 越しに触る。
+/// grad が `Variable` なのはステップ32以降(勾配計算自体がグラフになり、高階微分が可能)。
 struct VariableInner {
     data: ArrayD<f32>,
-    grad: Option<ArrayD<f32>>,
+    grad: Option<Variable>,
     creator: Option<Box<dyn Creator>>,
     generation: usize,
     name: Option<String>,
 }
 
+/// 本 ステップ1「箱としての変数」(grad はステップ6、creator は7、世代は16、名前は19)。
+///
+/// 実体への薄いハンドルで、`clone` しても中身は共有される(Python の変数の意味論)。
+/// 勾配は `backward(retain_grad, create_graph)` がグラフを遡って書き込む。
+/// `create_graph=true` なら勾配計算もグラフに載り、`grad_var()` に再度 backward
+/// できる(ステップ33の高階微分)。このとき grad 経由の Rc 循環が生じるため、
+/// 使い終わったら `cleargrad` で切断すること(リーク検証は tests/step33.rs)。
+/// `square()`/`sin()` 等のメソッドチェーンはステップ9「関数をより便利に」に対応。
 #[derive(Clone)]
 pub struct Variable(Rc<RefCell<VariableInner>>);
+
+/// 参照カウントを増やさない観測用ハンドル(Python の weakref / C++ の weak_ptr 相当)。
+/// 「グラフが本当に解放されたか」をテストで証明するために使う(ステップ17の議論の Rust 版)。
+pub struct WeakVariable(std::rc::Weak<std::cell::RefCell<VariableInner>>);
+
+impl WeakVariable {
+    pub fn is_alive(&self) -> bool {
+        self.0.upgrade().is_some()
+    }
+}
 
 impl Variable {
     pub fn new(data: ArrayD<f32>) -> Self {
@@ -52,6 +73,10 @@ impl Variable {
         self.0.borrow().name.clone()
     }
 
+    pub fn downgrade(&self) -> WeakVariable {
+        WeakVariable(std::rc::Rc::downgrade(&self.0))
+    }
+
     pub fn set_name(&self, name: &str) {
         self.0.borrow_mut().name = Some(name.to_string());
     }
@@ -78,21 +103,24 @@ impl Variable {
             .expect("Variable has no data")
     }
 
-    pub fn grad(&self) -> Option<ArrayD<f32>> {
+    pub fn grad_var(&self) -> Option<Variable> {
         self.0.borrow().grad.clone()
     }
 
-    pub fn set_grad(&self, grad: ArrayD<f32>) {
+    pub fn grad(&self) -> Option<ArrayD<f32>> {
+        self.grad_var().map(|v| v.data())
+    }
+
+    pub fn set_grad(&self, grad: Variable) {
         self.0.borrow_mut().grad = Some(grad);
     }
 
-    pub fn add_grad(&self, gx: ArrayD<f32>) {
-        let mut borrow = self.0.borrow_mut();
-        if let Some(grad) = &mut borrow.grad {
-            *grad += &gx;
-        } else {
-            borrow.grad = Some(gx);
-        }
+    pub fn add_grad(&self, gx: Variable) {
+        let new_grad = match &self.0.borrow().grad {
+            Some(grad) => grad + &gx,
+            None => gx,
+        };
+        self.0.borrow_mut().grad = Some(new_grad);
     }
 
     pub fn cleargrad(&self) {
@@ -115,9 +143,14 @@ impl Variable {
         })
     }
 
-    pub fn backward(&self, retain_grad: bool) {
-        if self.grad().is_none() {
-            self.set_grad(ArrayD::from_elem(self.data().shape(), 1.0f32));
+    pub fn backward(&self, retain_grad: bool, create_graph: bool) {
+        let _guard = if !create_graph { Some(no_grad()) } else { None };
+
+        if self.grad_var().is_none() {
+            self.set_grad(Variable::new(ArrayD::from_elem(
+                self.data().shape(),
+                1.0f32,
+            )));
         }
 
         let mut queue = vec![];
@@ -134,8 +167,8 @@ impl Variable {
             let computed_gradients = {
                 let borrow = var.0.borrow();
                 if let Some(creator) = &borrow.creator {
-                    let grad = borrow.grad.as_ref().unwrap();
-                    let gxs = creator.backward(grad);
+                    let grad = borrow.grad.as_ref().unwrap().clone();
+                    let gxs = creator.backward(&grad);
                     let inputs = creator.get_inputs();
                     Some((gxs, inputs))
                 } else {
@@ -170,6 +203,14 @@ impl Variable {
 
     pub fn sin(&self) -> Variable {
         Sin.call(std::slice::from_ref(self))
+    }
+
+    pub fn cos(&self) -> Variable {
+        Cos.call(std::slice::from_ref(self))
+    }
+
+    pub fn tanh(&self) -> Variable {
+        Tanh.call(std::slice::from_ref(self))
     }
 
     pub fn add(&self, other: &Variable) -> Variable {
@@ -289,9 +330,9 @@ mod tests {
         let y = b.square();
 
         // y.grad = 1.0 (shapeは揃える)
-        y.set_grad(array![[1.0f32]].into_dyn());
+        y.set_grad(Variable::new(array![[1.0f32]].into_dyn()));
 
-        fn get_gx(var: &Variable, gy: &ArrayD<f32>) -> ArrayD<f32> {
+        fn get_gx(var: &Variable, gy: &Variable) -> Variable {
             var.0
                 .borrow()
                 .creator
@@ -303,13 +344,13 @@ mod tests {
                 .unwrap()
         }
 
-        let gy = y.grad().unwrap();
+        let gy = y.grad_var().unwrap();
         b.set_grad(get_gx(&y, &gy));
 
-        let gb = b.grad().unwrap();
+        let gb = b.grad_var().unwrap();
         a.set_grad(get_gx(&b, &gb));
 
-        let ga = a.grad().unwrap();
+        let ga = a.grad_var().unwrap();
         x.set_grad(get_gx(&a, &ga));
 
         let expected_grad = array![[3.2974426f32]].into_dyn();
@@ -319,9 +360,9 @@ mod tests {
             1e-5 // 誤差の許容範囲
         ));
 
-        let ga2 = a.grad().unwrap();
+        let ga2 = a.grad_var().unwrap();
         let x_grad_2 = get_gx(&a, &ga2);
-        assert_eq!(x.grad().unwrap(), x_grad_2);
+        assert_eq!(x.grad().unwrap(), x_grad_2.data());
     }
 
     #[test]

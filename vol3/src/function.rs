@@ -5,9 +5,11 @@ use ndarray::ArrayD;
 /// 逆伝播がグラフ遡行に必要とする最小の界面(ステップ7の creator 参照の Rust 版)。
 ///
 /// 出力 Variable が `Box<dyn Creator>` として所有する。参照は常に過去向き
-/// (出力 → 関数 → 入力)なので、現状のグラフに Rc の循環は存在しない。
+/// (出力 → 関数 → 入力)なので、順伝播のグラフに Rc の循環は存在しない。
+/// 例外はステップ32以降の `create_graph=true`: grad フィールド経由の循環が生じ得るが、
+/// `cleargrad` が切断する(検証は tests/step33.rs のリークテスト)。
 pub trait Creator {
-    fn backward(&self, gy: &ArrayD<f32>) -> Vec<ArrayD<f32>>;
+    fn backward(&self, gy: &Variable) -> Vec<Variable>;
     fn get_inputs(&self) -> Vec<Variable>;
     fn label(&self) -> String;
 }
@@ -22,9 +24,8 @@ pub struct Node<F> {
 }
 
 impl<F: Function> Creator for Node<F> {
-    fn backward(&self, gy: &ArrayD<f32>) -> Vec<ArrayD<f32>> {
-        let xs: Vec<ArrayD<f32>> = self.inputs.iter().map(|v| v.data()).collect();
-        self.func.backward(&xs, gy)
+    fn backward(&self, gy: &Variable) -> Vec<Variable> {
+        self.func.backward(&self.inputs, gy)
     }
 
     fn get_inputs(&self) -> Vec<Variable> {
@@ -51,7 +52,9 @@ pub trait Forward {
 /// `call` が Python 版 `__call__` に相当するテンプレートメソッド。self を消費して
 /// `Node` に移し、出力 Variable が creator として所有する(ステップ7)。
 /// `where Self: Sized` により `call` は vtable から外れ、trait は dyn 互換のまま。
-/// `backward` は「入力 x と gy から gx」の純関数(ステップ6)。
+/// `backward` は「入力 x と gy から gx」の純関数(ステップ6)。ステップ32からは
+/// Variable を受けて Variable 演算で書く — 勾配計算そのものが計算グラフになり、
+/// `create_graph=true` の backward で高階微分が可能になる。
 pub trait Function: Forward {
     fn call(self, inputs: &[Variable]) -> Variable
     where
@@ -76,7 +79,7 @@ pub trait Function: Forward {
         result
     }
 
-    fn backward(&self, xs: &[ArrayD<f32>], gy: &ArrayD<f32>) -> Vec<ArrayD<f32>>;
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable>;
 }
 
 impl<T> Forward for T

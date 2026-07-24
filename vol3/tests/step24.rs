@@ -24,7 +24,7 @@ fn test_sphere() {
     let x = Variable::new(array![[1.0f32]].into_dyn());
     let y = Variable::new(array![[1.0f32]].into_dyn());
     let z = sphere(&x, &y);
-    z.backward(false);
+    z.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &x.grad().unwrap(),
@@ -43,7 +43,7 @@ fn test_matyas() {
     let x = Variable::new(array![[1.0f32]].into_dyn());
     let y = Variable::new(array![[1.0f32]].into_dyn());
     let z = matyas(&x, &y);
-    z.backward(false);
+    z.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &x.grad().unwrap(),
@@ -62,7 +62,7 @@ fn test_goldstein_price() {
     let x = Variable::new(array![[1.0f32]].into_dyn());
     let y = Variable::new(array![[1.0f32]].into_dyn());
     let z = goldstein_price(&x, &y);
-    z.backward(false);
+    z.backward(false, false);
 
     assert!(approx_equal_arrayd(
         &x.grad().unwrap(),

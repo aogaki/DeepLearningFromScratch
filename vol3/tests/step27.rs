@@ -27,7 +27,7 @@ fn test_my_sin_gradient_check() {
     let x = Variable::from(pi / 4.0);
 
     let y = my_sin(&x, 1e-4);
-    y.backward(false);
+    y.backward(false, false);
 
     let expected_grad = x.grad().unwrap();
     let num_grad = numerical_diff(
@@ -45,7 +45,7 @@ fn test_sin_gradient_check() {
     let x = Variable::from(pi / 4.0);
 
     let y = x.sin();
-    y.backward(false);
+    y.backward(false, false);
 
     let expected_grad = x.grad().unwrap();
 

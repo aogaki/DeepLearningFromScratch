@@ -16,7 +16,7 @@ fn test_newton_manual_optimization() {
     for _ in 0..iters {
         let y = f(&x);
         x.cleargrad();
-        y.backward(false);
+        y.backward(false, false);
 
         let gx = x.grad().unwrap().into_iter().next().unwrap();
         let val_x = x.item();

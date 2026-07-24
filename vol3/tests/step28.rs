@@ -20,7 +20,7 @@ fn test_rosenbrock_optimization() {
         // 累積を防ぐために cleargrad が必須！
         x0.cleargrad();
         x1.cleargrad();
-        y.backward(false);
+        y.backward(false, false);
 
         let gx0 = x0.grad().unwrap();
         let gx1 = x1.grad().unwrap();

@@ -18,7 +18,7 @@ fn main() {
 
         x0.cleargrad();
         x1.cleargrad();
-        y.backward(false);
+        y.backward(false, false);
 
         let v0 = x0.item();
         let v1 = x1.item();

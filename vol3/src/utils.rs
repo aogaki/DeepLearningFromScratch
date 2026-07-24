@@ -104,3 +104,46 @@ pub fn get_dot_graph(output: &Variable, verbose: bool) -> String {
     txt.push_str("}\n");
     txt
 }
+
+/// 本 ステップ40: 配列を target_shape まで和で畳むデータ層の実装(SumTo::forward の中身)。
+/// 目標形を左から 1 で埋めて軸を対応させ、「目標が 1 で実際が >1」の軸だけ後ろから
+/// sum_axis で潰す(後ろからなので軸番号がずれない)。最後の reshape が 1 の軸を整える。
+pub fn sum_to(x: &ndarray::ArrayD<f32>, target_shape: &[usize]) -> ndarray::ArrayD<f32> {
+    if x.shape() == target_shape {
+        return x.clone();
+    }
+    let mut out = x.clone();
+    let mut padded_target = vec![1; out.ndim().saturating_sub(target_shape.len())];
+    padded_target.extend_from_slice(target_shape);
+
+    for i in (0..out.ndim()).rev() {
+        if padded_target[i] == 1 && out.shape()[i] > 1 {
+            out = out.sum_axis(ndarray::Axis(i)).into_dyn();
+        }
+    }
+
+    out.into_shape_with_order(target_shape).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    #[test]
+    fn test_sum_to() {
+        let x = array![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]].into_dyn();
+
+        // Sum over axis 0 -> [3]
+        let y = sum_to(&x, &[3]);
+        assert_eq!(y, array![5.0, 7.0, 9.0].into_dyn());
+
+        // Sum over axis 1 -> [2, 1]
+        let y = sum_to(&x, &[2, 1]);
+        assert_eq!(y, array![[6.0], [15.0]].into_dyn());
+
+        // Sum all -> [] or [1] or whatever, let's say [1]
+        let y = sum_to(&x, &[1]);
+        assert_eq!(y, array![21.0].into_dyn());
+    }
+}

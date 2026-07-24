@@ -51,8 +51,11 @@ impl Forward for Add {
     }
 }
 impl Function for Add {
-    fn backward(&self, _xs: &[Variable], gy: &Variable) -> Vec<Variable> {
-        vec![gy.clone(), gy.clone()]
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x0, x1] = xs else {
+            panic!("Add expects 2 inputs")
+        };
+        vec![gy.sum_to(&x0.shape()), gy.sum_to(&x1.shape())]
     }
 }
 
@@ -71,7 +74,7 @@ impl Function for Mul {
         let [x0, x1] = xs else {
             panic!("Mul expects 2 inputs")
         };
-        vec![gy * x1, gy * x0]
+        vec![(gy * x1).sum_to(&x0.shape()), (gy * x0).sum_to(&x1.shape())]
     }
 }
 
@@ -102,8 +105,11 @@ impl Forward for Sub {
     }
 }
 impl Function for Sub {
-    fn backward(&self, _xs: &[Variable], gy: &Variable) -> Vec<Variable> {
-        vec![gy.clone(), -gy]
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x0, x1] = xs else {
+            panic!("Sub expects 2 inputs")
+        };
+        vec![gy.sum_to(&x0.shape()), (-gy).sum_to(&x1.shape())]
     }
 }
 
@@ -122,8 +128,8 @@ impl Function for Div {
         let [x0, x1] = xs else {
             panic!("Div expects 2 inputs")
         };
-        let gx0 = gy / x1;
-        let gx1 = gy * (-x0 / x1.powf(2.0));
+        let gx0 = (gy / x1).sum_to(&x0.shape());
+        let gx1 = (gy * (-x0 / x1.powf(2.0))).sum_to(&x1.shape());
         vec![gx0, gx1]
     }
 }
@@ -209,5 +215,131 @@ impl Function for Tanh {
         };
         let y = x.tanh();
         vec![gy * (1.0 - y.powf(2.0))]
+    }
+}
+
+/// 本 ステップ38: 形を変える(要素の値と順序はそのまま)。backward は gy を元の形へ
+/// reshape するだけ — 元の形は保存せず、backward が受け取る入力 `xs[0]` から読む。
+/// forward の `as_standard_layout` は転置直後などの非標準レイアウト対策(vol1 の教訓)。
+pub struct Reshape {
+    pub shape: Vec<usize>,
+}
+impl Forward for Reshape {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Reshape expects 1 input")
+        };
+        x.as_standard_layout()
+            .into_owned()
+            .into_shape_with_order(self.shape.clone())
+            .unwrap()
+    }
+}
+impl Function for Reshape {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Reshape expects 1 input")
+        };
+        let original_shape = x.shape();
+        vec![gy.reshape(&original_shape)]
+    }
+}
+
+/// 本 ステップ38: 全軸反転の転置。自己逆元なので backward はもう一度 transpose。
+pub struct Transpose;
+impl Forward for Transpose {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Transpose expects 1 input")
+        };
+        x.t().as_standard_layout().into_owned()
+    }
+}
+impl Function for Transpose {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [_x] = xs else {
+            panic!("Transpose expects 1 input")
+        };
+        vec![gy.transpose()]
+    }
+}
+
+/// 本 ステップ40: 形を押し広げる(要素の複製)。backward は sum_to — SumTo と互いが
+/// 互いの逆伝播になる双対ペア。
+pub struct BroadcastTo {
+    pub shape: Vec<usize>,
+}
+impl Forward for BroadcastTo {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("BroadcastTo expects 1 input")
+        };
+        x.broadcast(self.shape.clone()).unwrap().into_owned()
+    }
+}
+impl Function for BroadcastTo {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("BroadcastTo expects 1 input")
+        };
+        vec![gy.sum_to(&x.shape())]
+    }
+}
+
+/// 本 ステップ40: 指定の形まで和で畳む(BroadcastTo の双対)。
+/// Add/Sub/Mul/Div の backward がこれを通ることで、ブロードキャストされた演算の
+/// 勾配が正しい形に戻る — ステップ21から抱えていた「スカラー勾配の形」の負債を精算した。
+pub struct SumTo {
+    pub shape: Vec<usize>,
+}
+impl Forward for SumTo {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("SumTo expects 1 input")
+        };
+        crate::utils::sum_to(x, &self.shape)
+    }
+}
+impl Function for SumTo {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("SumTo expects 1 input")
+        };
+        vec![gy.broadcast_to(&x.shape())]
+    }
+}
+
+/// 本 ステップ39: 和(None = 全和、Some(ax) = 軸1本)。本の axis タプル+keepdims の
+/// フル装備ではなく、線形回帰〜MLP が実際に使う部分集合に絞ってある。
+/// backward は「消えた軸を 1 で復元 → broadcast_to」。
+pub struct Sum {
+    pub axis: Option<usize>,
+}
+impl Forward for Sum {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Sum expects 1 input")
+        };
+        match self.axis {
+            Some(ax) => x.sum_axis(ndarray::Axis(ax)).into_dyn(),
+            None => ndarray::arr0(x.sum()).into_dyn(),
+        }
+    }
+}
+impl Function for Sum {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Sum expects 1 input")
+        };
+        let mut gy_shape = gy.shape();
+        if let Some(ax) = self.axis {
+            // keepdims=false で計算しているので、gy の shape に軸を復元する
+            gy_shape.insert(ax, 1);
+        } else if x.ndim() > 0 {
+            // scalar result, reshape to all 1s matching original rank
+            gy_shape = vec![1; x.ndim()];
+        }
+        let gy_reshaped = gy.reshape(&gy_shape);
+        vec![gy_reshaped.broadcast_to(&x.shape())]
     }
 }

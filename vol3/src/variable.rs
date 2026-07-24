@@ -1,7 +1,10 @@
 use crate::config::no_grad;
 use crate::function::Creator;
 use crate::function::Function;
-use crate::functions::{Add, Cos, Div, Exp, Mul, Neg, Pow, Sin, Square, Sub, Tanh};
+use crate::functions::{
+    Add, BroadcastTo, Cos, Div, Exp, Mul, Neg, Pow, Reshape, Sin, Square, Sub, Sum, SumTo, Tanh,
+    Transpose,
+};
 use ndarray::ArrayD;
 use std::cell::RefCell;
 use std::fmt;
@@ -116,6 +119,7 @@ impl Variable {
     }
 
     pub fn add_grad(&self, gx: Variable) {
+        debug_assert_eq!(self.shape(), gx.shape(), "grad shape must match data shape");
         let new_grad = match &self.0.borrow().grad {
             Some(grad) => grad + &gx,
             None => gx,
@@ -211,6 +215,45 @@ impl Variable {
 
     pub fn tanh(&self) -> Variable {
         Tanh.call(std::slice::from_ref(self))
+    }
+
+    pub fn reshape(&self, shape: &[usize]) -> Variable {
+        Reshape {
+            shape: shape.to_vec(),
+        }
+        .call(std::slice::from_ref(self))
+    }
+
+    pub fn transpose(&self) -> Variable {
+        Transpose.call(std::slice::from_ref(self))
+    }
+
+    pub fn broadcast_to(&self, shape: &[usize]) -> Variable {
+        if self.shape() == shape {
+            return self.clone();
+        }
+        BroadcastTo {
+            shape: shape.to_vec(),
+        }
+        .call(std::slice::from_ref(self))
+    }
+
+    pub fn sum_to(&self, shape: &[usize]) -> Variable {
+        if self.shape() == shape {
+            return self.clone();
+        }
+        SumTo {
+            shape: shape.to_vec(),
+        }
+        .call(std::slice::from_ref(self))
+    }
+
+    pub fn sum(&self) -> Variable {
+        Sum { axis: None }.call(std::slice::from_ref(self))
+    }
+
+    pub fn sum_axis(&self, axis: usize) -> Variable {
+        Sum { axis: Some(axis) }.call(std::slice::from_ref(self))
     }
 
     pub fn add(&self, other: &Variable) -> Variable {

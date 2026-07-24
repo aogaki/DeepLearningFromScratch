@@ -32,6 +32,10 @@ impl Variable {
         self.0.borrow().data.clone()
     }
 
+    pub fn set_data(&self, data: ArrayD<f32>) {
+        self.0.borrow_mut().data = data;
+    }
+
     pub fn generation(&self) -> usize {
         self.0.borrow().generation
     }
@@ -62,6 +66,16 @@ impl Variable {
 
     pub fn size(&self) -> usize {
         self.0.borrow().data.len()
+    }
+
+    pub fn item(&self) -> f32 {
+        *self
+            .0
+            .borrow()
+            .data
+            .iter()
+            .next()
+            .expect("Variable has no data")
     }
 
     pub fn grad(&self) -> Option<ArrayD<f32>> {

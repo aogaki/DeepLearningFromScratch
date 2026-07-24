@@ -21,9 +21,7 @@ fn my_sin(x: &Variable, threshold: f32) -> Variable {
         y = &y + &t;
         y.set_name(&format!("y_{}", i + 1));
 
-        let t_data = t.data();
-        let t_val = t_data.into_iter().next().unwrap();
-
+        let t_val = t.item();
         if t_val.abs() < threshold {
             break;
         }

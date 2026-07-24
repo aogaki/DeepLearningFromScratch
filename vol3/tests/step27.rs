@@ -13,8 +13,7 @@ fn my_sin(x: &Variable, threshold: f32) -> Variable {
         let t = x.powf((2 * i + 1) as f32) * &Variable::from(c);
         y = &y + &t;
 
-        let t_data = t.data();
-        let t_val = t_data.into_iter().next().unwrap();
+        let t_val = t.item();
         if t_val.abs() < threshold {
             break;
         }

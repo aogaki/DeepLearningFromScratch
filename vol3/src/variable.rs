@@ -2,8 +2,8 @@ use crate::config::no_grad;
 use crate::function::Creator;
 use crate::function::Function;
 use crate::functions::{
-    Add, BroadcastTo, Cos, Div, Exp, Mul, Neg, Pow, Reshape, Sin, Square, Sub, Sum, SumTo, Tanh,
-    Transpose,
+    Add, BroadcastTo, Cos, Div, Exp, MatMul, Mul, Neg, Pow, Reshape, Sigmoid, Sin, Square, Sub,
+    Sum, SumTo, Tanh, Transpose,
 };
 use ndarray::ArrayD;
 use std::cell::RefCell;
@@ -217,6 +217,10 @@ impl Variable {
         Tanh.call(std::slice::from_ref(self))
     }
 
+    pub fn sigmoid(&self) -> Variable {
+        Sigmoid.call(std::slice::from_ref(self))
+    }
+
     pub fn reshape(&self, shape: &[usize]) -> Variable {
         Reshape {
             shape: shape.to_vec(),
@@ -254,6 +258,10 @@ impl Variable {
 
     pub fn sum_axis(&self, axis: usize) -> Variable {
         Sum { axis: Some(axis) }.call(std::slice::from_ref(self))
+    }
+
+    pub fn matmul(&self, other: &Variable) -> Variable {
+        MatMul.call(&[self.clone(), other.clone()])
     }
 
     pub fn add(&self, other: &Variable) -> Variable {

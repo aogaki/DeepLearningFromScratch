@@ -218,6 +218,27 @@ impl Function for Tanh {
     }
 }
 
+/// 本 ステップ43: シグモイド関数 y = 1/(1+e^(−x))。
+/// backward は gy·y(1−y) — Tanh と同様、出力を保存せず入力 x から y を再計算する方式。
+pub struct Sigmoid;
+impl Forward for Sigmoid {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Sigmoid expects 1 input")
+        };
+        x.mapv(|v| 1.0 / (1.0 + (-v).exp()))
+    }
+}
+impl Function for Sigmoid {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Sigmoid expects 1 input")
+        };
+        let y = x.sigmoid();
+        vec![gy * &y * (1.0 - &y)]
+    }
+}
+
 /// 本 ステップ38: 形を変える(要素の値と順序はそのまま)。backward は gy を元の形へ
 /// reshape するだけ — 元の形は保存せず、backward が受け取る入力 `xs[0]` から読む。
 /// forward の `as_standard_layout` は転置直後などの非標準レイアウト対策(vol1 の教訓)。
@@ -341,5 +362,55 @@ impl Function for Sum {
         }
         let gy_reshaped = gy.reshape(&gy_shape);
         vec![gy_reshaped.broadcast_to(&x.shape())]
+    }
+}
+
+/// 本 ステップ41: 行列の積。
+/// ndarray の `dot` メソッドは 2 次元配列専用であるため、`into_dimensionality::<Ix2>()`
+/// を通して型変換を行う。backward は `gx = gy @ W^T` と `gW = x^T @ gy` になる。
+pub struct MatMul;
+impl Forward for MatMul {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x, w] = xs else {
+            panic!("MatMul expects 2 inputs")
+        };
+        let x_view = x
+            .view()
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("MatMul requires 2D input for x");
+        let w_view = w
+            .view()
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("MatMul requires 2D input for W");
+        x_view.dot(&w_view).into_dyn()
+    }
+}
+impl Function for MatMul {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x, w] = xs else {
+            panic!("MatMul expects 2 inputs")
+        };
+        let gx = gy.matmul(&w.transpose());
+        let gw = x.transpose().matmul(gy);
+        vec![gx, gw]
+    }
+}
+
+/// 本 ステップ42: 平均二乗誤差 sum((x0−x1)²)/N。
+/// フレームワークの演算の合成なので、それ自体が微分可能(二階微分も自動で正しい)。
+pub fn mean_squared_error(x0: &Variable, x1: &Variable) -> Variable {
+    let diff = x0 - x1;
+    let batch_size = x0.shape()[0] as f32;
+    diff.powf(2.0).sum() / batch_size
+}
+
+/// 本 ステップ43: 線形変換 y = xW (+ b)。本の linear_simple に相当する合成関数。
+/// bias の有無は Option で表現(Python のデフォルト引数 None の型付き版)。
+/// b の加算は (N,o)+(o,) のブロードキャストで、backward の sum_to が bias 勾配を畳む。
+pub fn linear(x: &Variable, w: &Variable, b: Option<&Variable>) -> Variable {
+    let t = x.matmul(w);
+    match b {
+        Some(b_var) => t + b_var,
+        None => t,
     }
 }

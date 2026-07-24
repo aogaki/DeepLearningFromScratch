@@ -60,5 +60,10 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   モジュール構成: variable/function/functions/config/macros/utils + tests/(ステップ実例)。
   第3ステージ(〜ステップ36)完了: Graphviz 可視化、高階微分(grad が Variable、
   backward が Variable 演算でグラフを作る、create_graph フラグ+no_grad ガード)、
-  Weak によるリーク検証テスト付き。次はステップ37〜(第4ステージ: NN インフラ)。
+  Weak によるリーク検証テスト付き。
+  第4ステージ進行中(〜ステップ43): reshape/transpose、broadcast_to/sum_to の双対、
+  四則演算のブロードキャスト対応(grad.shape == data.shape の不変条件を debug_assert)、
+  行列積、mean_squared_error/linear/Sigmoid、線形回帰と 1-10-1 MLP(sin 回帰)。
+  次はステップ44〜(Parameter/Layer — Python の継承+__setattr__ 相当を
+  Rust でどう設計するかの相談から。vol1 の Layer trait が先行事例)。
 - vol2・vol4〜vol6: 未着手(vol2 は個人的興味の巻として後回し、vol3 を先行)。

@@ -1,6 +1,6 @@
 use crate::function::Creator;
 use crate::function::Function;
-use crate::functions::{Add, Div, Exp, Mul, Neg, Pow, Square, Sub};
+use crate::functions::{Add, Div, Exp, Mul, Neg, Pow, Sin, Square, Sub};
 use ndarray::ArrayD;
 use std::cell::RefCell;
 use std::fmt;
@@ -38,6 +38,10 @@ impl Variable {
 
     pub fn set_generation(&self, generation: usize) {
         self.0.borrow_mut().generation = generation;
+    }
+
+    pub fn id(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
     }
 
     pub fn name(&self) -> Option<String> {
@@ -89,6 +93,14 @@ impl Variable {
         self.0.borrow().creator.is_some()
     }
 
+    pub fn creator_info(&self) -> Option<(usize, String, Vec<Variable>)> {
+        let borrow = self.0.borrow();
+        borrow.creator.as_ref().map(|c| {
+            let id = c.as_ref() as *const dyn Creator as *const () as usize;
+            (id, c.label(), c.get_inputs())
+        })
+    }
+
     pub fn backward(&self, retain_grad: bool) {
         if self.grad().is_none() {
             self.set_grad(ArrayD::from_elem(self.data().shape(), 1.0f32));
@@ -97,7 +109,7 @@ impl Variable {
         let mut queue = vec![];
         let mut seen_set = std::collections::HashSet::new();
 
-        let ptr = Rc::as_ptr(&self.0) as usize;
+        let ptr = self.id();
         seen_set.insert(ptr);
         queue.push(self.clone());
 
@@ -120,7 +132,7 @@ impl Variable {
             if let Some((gxs, inputs)) = computed_gradients {
                 for (gx, input) in gxs.into_iter().zip(inputs.into_iter()) {
                     input.add_grad(gx);
-                    let ptr = Rc::as_ptr(&input.0) as usize;
+                    let ptr = input.id();
                     if !seen_set.contains(&ptr) {
                         seen_set.insert(ptr);
                         queue.push(input);
@@ -140,6 +152,10 @@ impl Variable {
 
     pub fn exp(&self) -> Variable {
         Exp.call(std::slice::from_ref(self))
+    }
+
+    pub fn sin(&self) -> Variable {
+        Sin.call(std::slice::from_ref(self))
     }
 
     pub fn add(&self, other: &Variable) -> Variable {

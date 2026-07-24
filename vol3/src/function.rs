@@ -9,6 +9,7 @@ use ndarray::ArrayD;
 pub trait Creator {
     fn backward(&self, gy: &ArrayD<f32>) -> Vec<ArrayD<f32>>;
     fn get_inputs(&self) -> Vec<Variable>;
+    fn label(&self) -> String;
 }
 
 /// 「関数と、その呼び出し時の入力」を束ねた計算グラフのノード。
@@ -28,6 +29,11 @@ impl<F: Function> Creator for Node<F> {
 
     fn get_inputs(&self) -> Vec<Variable> {
         self.inputs.clone()
+    }
+
+    fn label(&self) -> String {
+        let name = std::any::type_name::<F>();
+        name.rsplit("::").next().unwrap_or(name).to_string()
     }
 }
 

@@ -141,3 +141,21 @@ impl Function for Pow {
         vec![gx0]
     }
 }
+
+pub struct Sin;
+impl Forward for Sin {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Sin expects 1 input")
+        };
+        x.mapv(|v| v.sin())
+    }
+}
+impl Function for Sin {
+    fn backward(&self, xs: &[ArrayD<f32>], gy: &ArrayD<f32>) -> Vec<ArrayD<f32>> {
+        let [x] = xs else {
+            panic!("Sin expects 1 input")
+        };
+        vec![gy * x.mapv(|v| v.cos())]
+    }
+}

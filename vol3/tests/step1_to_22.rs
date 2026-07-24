@@ -1,8 +1,7 @@
 use ndarray::ArrayD;
 use ndarray::array;
+use vol3::utils::EPSILON_FOR_DIFF;
 use vol3::*;
-
-const EPSILON_FOR_DIFF: f32 = 5e-3;
 
 // ステップ1: Variable がデータを保持する
 #[test]

@@ -89,6 +89,61 @@ impl Optimizer for MomentumSGD {
     }
 }
 
+pub struct Adam {
+    pub lr: f32,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub eps: f32,
+    pub t: f32,
+    pub params: Vec<crate::variable::Variable>,
+    pub ms: Vec<ndarray::ArrayD<f32>>,
+    pub vs: Vec<ndarray::ArrayD<f32>>,
+}
+
+impl Adam {
+    pub fn new(lr: f32) -> Self {
+        Self {
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            t: 0.0,
+            params: vec![],
+            ms: vec![],
+            vs: vec![],
+        }
+    }
+}
+
+impl Optimizer for Adam {
+    fn setup(&mut self, layer: &impl crate::layers::Layer) {
+        self.params = layer.params();
+        for p in &self.params {
+            self.ms.push(ndarray::ArrayD::zeros(p.data().dim()));
+            self.vs.push(ndarray::ArrayD::zeros(p.data().dim()));
+        }
+    }
+
+    fn update(&mut self) {
+        self.t += 1.0;
+        let lr_t =
+            self.lr * (1.0 - self.beta2.powf(self.t)).sqrt() / (1.0 - self.beta1.powf(self.t));
+        for i in 0..self.params.len() {
+            if let Some(grad) = self.params[i].grad() {
+                self.ms[i] = &self.ms[i] * self.beta1 + &grad * (1.0 - self.beta1);
+                self.vs[i] = &self.vs[i] * self.beta2 + (&grad * &grad) * (1.0 - self.beta2);
+                let p_data = self.params[i].data();
+
+                let mut v_hat = self.vs[i].clone();
+                v_hat.mapv_inplace(|v| v.sqrt() + self.eps);
+
+                let step = &self.ms[i] / v_hat;
+                self.params[i].set_data(p_data - (step * lr_t));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

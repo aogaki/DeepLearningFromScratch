@@ -112,3 +112,93 @@ impl Layer for VGG16 {
         h
     }
 }
+
+pub struct SimpleRNN {
+    pub rnn: crate::layers::RNN,
+    pub fc: Linear,
+}
+
+impl SimpleRNN {
+    pub fn new(hidden_size: usize, out_size: usize, rng: &mut impl rand::Rng) -> Self {
+        Self {
+            rnn: crate::layers::RNN::new(1, hidden_size, rng), // Input size is 1 for SinCurve
+            fc: Linear::new(hidden_size, out_size, false, rng),
+        }
+    }
+
+    pub fn reset_state(&self) {
+        self.rnn.reset_state();
+    }
+}
+
+impl Layer for SimpleRNN {
+    fn params(&self) -> Vec<Parameter> {
+        self.named_params().into_iter().map(|(_, p)| p).collect()
+    }
+
+    fn named_params(&self) -> Vec<(String, Parameter)> {
+        let mut p = Vec::new();
+        for (name, param) in self.rnn.named_params() {
+            p.push((format!("rnn/{}", name), param));
+        }
+        for (name, param) in self.fc.named_params() {
+            p.push((format!("fc/{}", name), param));
+        }
+        p
+    }
+
+    fn forward(&self, x: &Variable) -> Variable {
+        let h = self.rnn.forward(x);
+        self.fc.forward(&h)
+    }
+
+    fn unchain_backward(&self) {
+        self.rnn.unchain_backward();
+        self.fc.unchain_backward();
+    }
+}
+
+pub struct BetterRNN {
+    pub rnn: crate::layers::LSTM,
+    pub fc: Linear,
+}
+
+impl BetterRNN {
+    pub fn new(hidden_size: usize, out_size: usize, rng: &mut impl rand::Rng) -> Self {
+        Self {
+            rnn: crate::layers::LSTM::new(1, hidden_size, rng), // Input size is 1 for SinCurve
+            fc: Linear::new(hidden_size, out_size, false, rng),
+        }
+    }
+
+    pub fn reset_state(&self) {
+        self.rnn.reset_state();
+    }
+}
+
+impl Layer for BetterRNN {
+    fn params(&self) -> Vec<Parameter> {
+        self.named_params().into_iter().map(|(_, p)| p).collect()
+    }
+
+    fn named_params(&self) -> Vec<(String, Parameter)> {
+        let mut p = Vec::new();
+        for (name, param) in self.rnn.named_params() {
+            p.push((format!("rnn/{}", name), param));
+        }
+        for (name, param) in self.fc.named_params() {
+            p.push((format!("fc/{}", name), param));
+        }
+        p
+    }
+
+    fn forward(&self, x: &Variable) -> Variable {
+        let h = self.rnn.forward(x);
+        self.fc.forward(&h)
+    }
+
+    fn unchain_backward(&self) {
+        self.rnn.unchain_backward();
+        self.fc.unchain_backward();
+    }
+}

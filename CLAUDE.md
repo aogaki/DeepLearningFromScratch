@@ -103,6 +103,22 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   **VGG16 16層 forward が Python DeZero と 1e-4 で一致(パリティ儀式の初実戦)**。
   release 1.8s / debug 121s のため #[ignore]+README 手順化。重みは dataset/weights/
   (.gitignore に *.npz 追加済み — 528MB 事故防止)。
-  次はステップ59(RNN)。見どころ: 状態を持つレイヤ(隠れ状態の内部可変性)と
-  truncated BPTT のための unchain(グラフを切る操作)。
+  59 完了: RNN レイヤ(RefCell<Option<Variable>> の隠れ状態、h2h は nobias)、
+  Variable::unchain(一点切断 — 所有権 DAG なので本家のような walk 不要)+
+  Layer::unchain_backward(デフォルト no-op、状態層が override、複合層は子へ委譲)。
+  教訓: truncated BPTT のピンは2本 — レイヤの h と「累積 loss の Add 連鎖」。
+  後者を切り忘れると silent full BPTT + 二次コスト(スクラッチ実測で発見、
+  ウィンドウごと loss 変数+f32 集計に分離して解決)。SimpleRNN・SinCurve・
+  Adam(本家準拠の lr_t 畳み込み — v1.0 要件を前倒しで充足)。
+  sin 学習 100 epoch が release 2.8s、final loss < 0.02 を assert。
+  境界テストは「勾配遮断」+「Weak で解放観測」の2本立て(レイヤ版+モデル版)。
+  60 完了: LSTM(ゲート8 Linear、状態 h/c の2本 — reset/unchain とも両方処理)、
+  SeqDataLoader(ジャンプ幅オフセットの並行ストリーム、1エポック=jump 回)、
+  Dataset trait に関連型 Target 導入(usize 固定の借金を返済、既存実装も移行)、
+  BetterRNN。LSTM の unchain_backward は「固有メソッドが trait を陰る」罠を踏みかけ
+  (具象呼びは動くが dyn Layer 経由で no-op — スクラッチ実測で発見)、trait impl 側へ
+  移して &dyn Layer 経由の回帰テストで封印。cos 自己回帰 MSE 0.40 を assert
+  (SimpleRNN は 1.5 超)、100 epoch release 0.98s。
+  **★ vol3 本編(60ステップ)完走(2026-07-25)。**次はロードマップ順で vol4 前半
+  (素の Rust)、クレート昇格の判断は vol4 後半入り口。
 - vol2・vol4〜vol6: 未着手(vol2 は個人的興味の巻として後回し、vol3 を先行)。

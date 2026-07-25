@@ -2,6 +2,8 @@ use ndarray::ArrayD;
 
 /// 本 ステップ49: データセットの基底トレイト
 pub trait Dataset {
+    type Target;
+
     /// データの総数を返す
     fn len(&self) -> usize;
 
@@ -11,8 +13,8 @@ pub trait Dataset {
     }
 
     /// インデックスを指定してデータ1件を返す
-    /// 戻り値は入力特徴量と正解ラベル(今回は分類用にusize固定)
-    fn get_item(&self, index: usize) -> (ArrayD<f32>, usize);
+    /// 戻り値は入力特徴量と正解ラベル
+    fn get_item(&self, index: usize) -> (ArrayD<f32>, Self::Target);
 }
 
 /// 本 ステップ48〜49: スパイラルデータセット(3クラス渦巻き、クラス順に並んでいるため
@@ -31,11 +33,13 @@ impl SpiralDataset {
 }
 
 impl Dataset for SpiralDataset {
+    type Target = usize;
+
     fn len(&self) -> usize {
         self.x.shape()[0]
     }
 
-    fn get_item(&self, index: usize) -> (ArrayD<f32>, usize) {
+    fn get_item(&self, index: usize) -> (ArrayD<f32>, Self::Target) {
         let feature = self.x.row(index).to_owned().into_dyn();
         let label = self.t[index];
         (feature, label)
@@ -78,11 +82,13 @@ impl MnistDataset {
 }
 
 impl Dataset for MnistDataset {
+    type Target = usize;
+
     fn len(&self) -> usize {
         self.data.shape()[0]
     }
 
-    fn get_item(&self, index: usize) -> (ArrayD<f32>, usize) {
+    fn get_item(&self, index: usize) -> (ArrayD<f32>, Self::Target) {
         let x_u8 = self.data.index_axis(ndarray::Axis(0), index);
         let mut x_f32 = x_u8.mapv(|v| v as f32).into_dyn();
 
@@ -101,4 +107,55 @@ pub fn mnist_flatten_normalize(x: ArrayD<f32>) -> ArrayD<f32> {
     // (1, 28, 28) を (784,) に平坦化して / 255.0
     let flat_x = x.into_shape_with_order(vec![784]).unwrap();
     flat_x / 255.0
+}
+
+pub struct SinCurveDataset {
+    pub data: ndarray::Array2<f32>,
+    pub label: ndarray::Array2<f32>,
+}
+
+impl SinCurveDataset {
+    pub fn new(train: bool) -> Self {
+        use rand::{Rng, SeedableRng};
+        let num_data = 1000;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let mut y = Vec::with_capacity(num_data);
+        for i in 0..num_data {
+            let x = (i as f32) / ((num_data - 1) as f32) * 2.0 * std::f32::consts::PI;
+            let val = if train {
+                let noise: f32 = rng.random_range(-0.05..0.05);
+                x.sin() + noise
+            } else {
+                x.cos()
+            };
+            y.push(val);
+        }
+
+        let mut data = Vec::with_capacity(num_data - 1);
+        let mut label = Vec::with_capacity(num_data - 1);
+        for i in 0..num_data - 1 {
+            data.push(y[i]);
+            label.push(y[i + 1]);
+        }
+
+        Self {
+            data: ndarray::Array2::from_shape_vec((num_data - 1, 1), data).unwrap(),
+            label: ndarray::Array2::from_shape_vec((num_data - 1, 1), label).unwrap(),
+        }
+    }
+}
+
+impl Dataset for SinCurveDataset {
+    type Target = ArrayD<f32>;
+
+    fn len(&self) -> usize {
+        self.data.shape()[0]
+    }
+
+    fn get_item(&self, index: usize) -> (ArrayD<f32>, Self::Target) {
+        let x = self.data.row(index).to_owned().into_dyn();
+        let t = self.label.row(index).to_owned().into_dyn();
+        (x, t)
+    }
 }

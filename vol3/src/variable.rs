@@ -139,6 +139,10 @@ impl Variable {
         self.0.borrow().creator.is_some()
     }
 
+    pub fn unchain(&self) {
+        self.0.borrow_mut().creator = None;
+    }
+
     pub fn creator_info(&self) -> Option<(usize, String, Vec<Variable>)> {
         let borrow = self.0.borrow();
         borrow.creator.as_ref().map(|c| {

@@ -1,6 +1,7 @@
 use crate::variable::Variable;
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Normal;
+use std::cell::RefCell;
 
 /// パラメータであることを明示するためのエイリアス(ドキュメント用)
 pub type Parameter = Variable;
@@ -23,6 +24,10 @@ pub trait Layer {
             p.cleargrad();
         }
     }
+
+    /// Truncated BPTTなどで計算グラフを過去に向かって切り離す(デフォルト実装は何もしない)。
+    /// RNNなどの状態を持つレイヤは、これをオーバーライドして内部状態(hやc)の `unchain_backward` を呼ぶ。
+    fn unchain_backward(&self) {}
 
     /// ステップ53: パラメータを .npz 形式でファイルに保存する。
     /// Python (NumPy) と互換性を持たせるため、キー名には `.npy` 拡張子が自動的に付与される
@@ -297,6 +302,174 @@ impl Layer for Conv2d {
     }
 }
 
+pub struct RNN {
+    pub x2h: Linear,
+    pub h2h: Linear,
+    pub h: std::cell::RefCell<Option<Variable>>,
+}
+
+impl RNN {
+    pub fn new(in_size: usize, hidden_size: usize, rng: &mut impl rand::Rng) -> Self {
+        Self {
+            x2h: Linear::new(in_size, hidden_size, false, rng),
+            h2h: Linear::new(hidden_size, hidden_size, true, rng),
+            h: std::cell::RefCell::new(None),
+        }
+    }
+
+    pub fn reset_state(&self) {
+        *self.h.borrow_mut() = None;
+    }
+}
+
+impl Layer for RNN {
+    fn params(&self) -> Vec<Parameter> {
+        self.named_params().into_iter().map(|(_, p)| p).collect()
+    }
+
+    fn named_params(&self) -> Vec<(String, Parameter)> {
+        let mut p = Vec::new();
+        for (name, param) in self.x2h.named_params() {
+            p.push((format!("x2h/{}", name), param));
+        }
+        for (name, param) in self.h2h.named_params() {
+            p.push((format!("h2h/{}", name), param));
+        }
+        p
+    }
+
+    fn forward(&self, x: &Variable) -> Variable {
+        let h_new = match &*self.h.borrow() {
+            Some(h) => (self.x2h.forward(x) + self.h2h.forward(h)).tanh(),
+            None => self.x2h.forward(x).tanh(),
+        };
+        *self.h.borrow_mut() = Some(h_new.clone());
+        h_new
+    }
+
+    fn unchain_backward(&self) {
+        if let Some(h) = self.h.borrow().as_ref() {
+            h.unchain();
+        }
+    }
+}
+
+pub struct LSTM {
+    pub x2f: Linear,
+    pub x2i: Linear,
+    pub x2o: Linear,
+    pub x2u: Linear,
+    pub h2f: Linear,
+    pub h2i: Linear,
+    pub h2o: Linear,
+    pub h2u: Linear,
+    pub h: RefCell<Option<Variable>>,
+    pub c: RefCell<Option<Variable>>,
+}
+
+impl LSTM {
+    pub fn new(in_size: usize, hidden_size: usize, rng: &mut impl rand::Rng) -> Self {
+        Self {
+            x2f: Linear::new(in_size, hidden_size, false, rng),
+            x2i: Linear::new(in_size, hidden_size, false, rng),
+            x2o: Linear::new(in_size, hidden_size, false, rng),
+            x2u: Linear::new(in_size, hidden_size, false, rng),
+            h2f: Linear::new(hidden_size, hidden_size, true, rng),
+            h2i: Linear::new(hidden_size, hidden_size, true, rng),
+            h2o: Linear::new(hidden_size, hidden_size, true, rng),
+            h2u: Linear::new(hidden_size, hidden_size, true, rng),
+            h: RefCell::new(None),
+            c: RefCell::new(None),
+        }
+    }
+
+    pub fn reset_state(&self) {
+        *self.h.borrow_mut() = None;
+        *self.c.borrow_mut() = None;
+    }
+
+    pub fn forward(&self, x: &Variable) -> Variable {
+        let (h_prev, c_prev) = match (&*self.h.borrow(), &*self.c.borrow()) {
+            (Some(h), Some(c)) => (Some(h.clone()), Some(c.clone())),
+            _ => (None, None),
+        };
+
+        let f;
+        let i;
+        let o;
+        let u;
+
+        if let Some(h) = h_prev {
+            f = self.x2f.forward(x) + self.h2f.forward(&h);
+            i = self.x2i.forward(x) + self.h2i.forward(&h);
+            o = self.x2o.forward(x) + self.h2o.forward(&h);
+            u = self.x2u.forward(x) + self.h2u.forward(&h);
+        } else {
+            f = self.x2f.forward(x);
+            i = self.x2i.forward(x);
+            o = self.x2o.forward(x);
+            u = self.x2u.forward(x);
+        }
+
+        let f_gate = f.sigmoid();
+        let i_gate = i.sigmoid();
+        let o_gate = o.sigmoid();
+        let u_gate = u.tanh();
+
+        let c_new = if let Some(c) = c_prev {
+            &f_gate * &c + &i_gate * &u_gate
+        } else {
+            &i_gate * &u_gate
+        };
+
+        let h_new = &o_gate * c_new.tanh();
+
+        *self.h.borrow_mut() = Some(h_new.clone());
+        *self.c.borrow_mut() = Some(c_new);
+
+        h_new
+    }
+}
+
+impl Layer for LSTM {
+    fn forward(&self, x: &Variable) -> Variable {
+        self.forward(x)
+    }
+
+    fn unchain_backward(&self) {
+        if let Some(h) = self.h.borrow().as_ref() {
+            h.unchain();
+        }
+        if let Some(c) = self.c.borrow().as_ref() {
+            c.unchain();
+        }
+    }
+
+    fn params(&self) -> Vec<Parameter> {
+        self.named_params().into_iter().map(|(_, p)| p).collect()
+    }
+
+    fn named_params(&self) -> Vec<(String, Parameter)> {
+        let mut p = Vec::new();
+        let layers: Vec<(&str, &dyn Layer)> = vec![
+            ("x2f", &self.x2f),
+            ("x2i", &self.x2i),
+            ("x2o", &self.x2o),
+            ("x2u", &self.x2u),
+            ("h2f", &self.h2f),
+            ("h2i", &self.h2i),
+            ("h2o", &self.h2o),
+            ("h2u", &self.h2u),
+        ];
+
+        for (name, l) in layers {
+            for (sub_name, param) in l.named_params() {
+                p.push((format!("{}/{}", name, sub_name), param));
+            }
+        }
+        p
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

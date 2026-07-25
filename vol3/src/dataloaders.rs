@@ -37,7 +37,7 @@ pub struct DataLoaderIter<'a, D: Dataset> {
 }
 
 impl<'a, D: Dataset> IntoIterator for &'a mut DataLoader<D> {
-    type Item = (Variable, Vec<usize>);
+    type Item = (Variable, Vec<D::Target>);
     type IntoIter = DataLoaderIter<'a, D>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -52,7 +52,7 @@ impl<'a, D: Dataset> IntoIterator for &'a mut DataLoader<D> {
 }
 
 impl<'a, D: Dataset> Iterator for DataLoaderIter<'a, D> {
-    type Item = (Variable, Vec<usize>);
+    type Item = (Variable, Vec<D::Target>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let dataset_len = self.loader.dataset.len();
@@ -87,5 +87,83 @@ impl<'a, D: Dataset> Iterator for DataLoaderIter<'a, D> {
 
         self.cursor = end;
         Some((Variable::new(batch_x.into_dyn()), batch_t))
+    }
+}
+
+/// 本 ステップ60: SeqDataLoader — シャッフルしないミニバッチ (時系列並行ストリーム)
+pub struct SeqDataLoader<D: Dataset<Target = ndarray::ArrayD<f32>>> {
+    dataset: D,
+    batch_size: usize,
+}
+
+impl<D: Dataset<Target = ndarray::ArrayD<f32>>> SeqDataLoader<D> {
+    pub fn new(dataset: D, batch_size: usize) -> Self {
+        Self {
+            dataset,
+            batch_size,
+        }
+    }
+}
+
+pub struct SeqDataLoaderIter<'a, D: Dataset<Target = ndarray::ArrayD<f32>>> {
+    loader: &'a mut SeqDataLoader<D>,
+    iteration: usize,
+    max_iter: usize,
+    jump: usize,
+}
+
+impl<'a, D: Dataset<Target = ndarray::ArrayD<f32>>> IntoIterator for &'a mut SeqDataLoader<D> {
+    type Item = (Variable, Variable);
+    type IntoIter = SeqDataLoaderIter<'a, D>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let data_size = self.dataset.len();
+        let jump = data_size / self.batch_size;
+        let max_iter = jump; // After `jump` iterations, it loops back, so 1 epoch = jump steps
+        SeqDataLoaderIter {
+            loader: self,
+            iteration: 0,
+            max_iter,
+            jump,
+        }
+    }
+}
+
+impl<'a, D: Dataset<Target = ndarray::ArrayD<f32>>> Iterator for SeqDataLoaderIter<'a, D> {
+    type Item = (Variable, Variable);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.iteration >= self.max_iter {
+            return None;
+        }
+
+        let data_size = self.loader.dataset.len();
+        let batch_size = self.loader.batch_size;
+
+        let (first_x, first_t) = self.loader.dataset.get_item(self.iteration % data_size);
+
+        let mut shape_x = vec![batch_size];
+        shape_x.extend(first_x.shape());
+        let mut shape_t = vec![batch_size];
+        shape_t.extend(first_t.shape());
+
+        let mut batch_x = ndarray::Array::zeros(shape_x);
+        let mut batch_t = ndarray::Array::zeros(shape_t);
+
+        batch_x.index_axis_mut(ndarray::Axis(0), 0).assign(&first_x);
+        batch_t.index_axis_mut(ndarray::Axis(0), 0).assign(&first_t);
+
+        for i in 1..batch_size {
+            let idx = (i * self.jump + self.iteration) % data_size;
+            let (x, t) = self.loader.dataset.get_item(idx);
+            batch_x.index_axis_mut(ndarray::Axis(0), i).assign(&x);
+            batch_t.index_axis_mut(ndarray::Axis(0), i).assign(&t);
+        }
+
+        self.iteration += 1;
+        Some((
+            Variable::new(batch_x.into_dyn()),
+            Variable::new(batch_t.into_dyn()),
+        ))
     }
 }

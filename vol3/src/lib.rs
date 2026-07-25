@@ -11,14 +11,21 @@
 //! 下の `pub use` 群は dezero/__init__.py 相当のファサード(`use vol3::*` で全部届く)。
 
 pub mod config;
+pub mod dataloaders;
+pub mod datasets;
 pub mod function;
 pub mod functions;
+pub mod layers;
 pub mod macros;
+pub mod mnist;
+pub mod optimizers;
 pub mod utils;
 pub mod variable;
 
 pub use config::*;
 pub use function::*;
 pub use functions::*;
+pub use layers::*;
+pub use optimizers::*;
 pub use utils::*;
 pub use variable::*;

@@ -125,6 +125,59 @@ pub fn sum_to(x: &ndarray::ArrayD<f32>, target_shape: &[usize]) -> ndarray::Arra
     out.into_shape_with_order(target_shape).unwrap()
 }
 
+/// 本 ステップ48: スパイラルデータセットの生成
+/// train: 訓練用かテスト用かでシードを切り替える (本家 DeZero に準拠して 1984 / 2020)
+pub fn get_spiral(train: bool) -> (ndarray::ArrayD<f32>, Vec<usize>) {
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
+
+    let seed = if train { 1984 } else { 2020 };
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+    let num_data = 100;
+    let num_class = 3;
+    let input_dim = 2;
+
+    let mut x = ndarray::Array2::<f32>::zeros((num_data * num_class, input_dim));
+    let mut t = vec![0; num_data * num_class];
+
+    for j in 0..num_class {
+        for i in 0..num_data {
+            let rate = i as f32 / num_data as f32;
+            let radius = 1.0 * rate;
+            let theta = j as f32 * 4.0 + 4.0 * rate + rng.random_range(-0.2..0.2);
+
+            let idx = num_data * j + i;
+            x[[idx, 0]] = radius * theta.sin();
+            x[[idx, 1]] = radius * theta.cos();
+            t[idx] = j;
+        }
+    }
+
+    (x.into_dyn(), t)
+}
+
+/// 本 ステップ48: 多クラス分類の正解率 (非微分・評価用)
+pub fn accuracy(y: &Variable, t: &[usize]) -> f32 {
+    let y_data = y.data();
+    let y2d = y_data.view().into_dimensionality::<ndarray::Ix2>().unwrap();
+    let mut correct = 0;
+    for (i, &target) in t.iter().enumerate() {
+        let mut max_val = f32::NEG_INFINITY;
+        let mut max_idx = 0;
+        for j in 0..y2d.shape()[1] {
+            if y2d[[i, j]] > max_val {
+                max_val = y2d[[i, j]];
+                max_idx = j;
+            }
+        }
+        if max_idx == target {
+            correct += 1;
+        }
+    }
+    correct as f32 / t.len() as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,7 +195,6 @@ mod tests {
         let y = sum_to(&x, &[2, 1]);
         assert_eq!(y, array![[6.0], [15.0]].into_dyn());
 
-        // Sum all -> [] or [1] or whatever, let's say [1]
         let y = sum_to(&x, &[1]);
         assert_eq!(y, array![21.0].into_dyn());
     }

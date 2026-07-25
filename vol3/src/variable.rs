@@ -221,6 +221,25 @@ impl Variable {
         Sigmoid.call(std::slice::from_ref(self))
     }
 
+    pub fn relu(&self) -> Variable {
+        crate::functions::relu(self)
+    }
+
+    pub fn ln(&self) -> Variable {
+        crate::functions::Log.call(std::slice::from_ref(self))
+    }
+
+    pub fn clip(&self, min: f32, max: f32) -> Variable {
+        crate::functions::Clip { min, max }.call(std::slice::from_ref(self))
+    }
+
+    pub fn gather(&self, indices: &[usize]) -> Variable {
+        crate::functions::Gather {
+            indices: indices.to_vec(),
+        }
+        .call(std::slice::from_ref(self))
+    }
+
     pub fn reshape(&self, shape: &[usize]) -> Variable {
         Reshape {
             shape: shape.to_vec(),

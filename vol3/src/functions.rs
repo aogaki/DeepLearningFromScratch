@@ -414,3 +414,177 @@ pub fn linear(x: &Variable, w: &Variable, b: Option<&Variable>) -> Variable {
         None => t,
     }
 }
+
+/// 本 ステップ51: ReLU y = max(x, 0)。
+/// backward は「x>0 のマスク定数 × gy」(Clip と同族)。専用の勾配ノードを持たないため、
+/// 二階微分も Mul の backward 経由で自動的に正しい(マスクは定数なので ∂²y/∂x² = 0 も自動)。
+/// 専用ペア(Gather/GatherGrad 型)は「既存演算で書けない」ときだけ — ReLU は Mul で書ける。
+pub struct Relu;
+impl Forward for Relu {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Relu expects 1 input")
+        };
+        x.mapv(|v| v.max(0.0))
+    }
+}
+impl Function for Relu {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Relu expects 1 input")
+        };
+        let mask = x.data().mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+        vec![gy * &Variable::new(mask)]
+    }
+}
+/// ReLU の関数形(`Variable::relu` メソッドと同じ。MLP の活性化に fn ポインタで渡せる)。
+pub fn relu(x: &Variable) -> Variable {
+    Relu.call(std::slice::from_ref(x))
+}
+
+/// 本 ステップ47: 対数関数 y = log(x)
+pub struct Log;
+impl Forward for Log {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Log expects 1 input")
+        };
+        x.mapv(|v| v.ln())
+    }
+}
+impl Function for Log {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Log expects 1 input")
+        };
+        vec![gy / x]
+    }
+}
+
+/// 本 ステップ47: y = clip(x, min, max)
+/// 逆伝播では範囲内の要素だけ勾配を通す (範囲外は 0)
+pub struct Clip {
+    pub min: f32,
+    pub max: f32,
+}
+impl Forward for Clip {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Clip expects 1 input")
+        };
+        x.mapv(|v| v.clamp(self.min, self.max))
+    }
+}
+impl Function for Clip {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Clip expects 1 input")
+        };
+        let mask = x.data().mapv(|v| {
+            if v >= self.min && v <= self.max {
+                1.0
+            } else {
+                0.0
+            }
+        });
+        vec![gy * &Variable::new(mask)]
+    }
+}
+
+/// 本 ステップ47: 多クラス分類用の行ごとの要素抽出 (GetItem の特定ケース)
+/// x (N, C) から indices (N,) に従って各行から1要素を抽出して (N,) を返す。
+pub struct Gather {
+    pub indices: Vec<usize>,
+}
+impl Forward for Gather {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Gather expects 1 input")
+        };
+        assert_eq!(x.ndim(), 2, "Gather expects a 2D array");
+        let x2d = x.view().into_dimensionality::<ndarray::Ix2>().unwrap();
+        let mut out = ndarray::Array1::<f32>::zeros(self.indices.len());
+        for (i, &col) in self.indices.iter().enumerate() {
+            out[i] = x2d[[i, col]];
+        }
+        out.into_dyn()
+    }
+}
+impl Function for Gather {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Gather expects 1 input")
+        };
+        // 逆伝播は GatherGrad (ScatterAdd)
+        vec![
+            GatherGrad {
+                indices: self.indices.clone(),
+                in_shape: x.shape(),
+            }
+            .call(std::slice::from_ref(gy)),
+        ]
+    }
+}
+
+/// 本 ステップ47: Gather の逆伝播 — ゼロ配列への scatter-add。
+/// GatherGrad の backward は再び Gather(BroadcastTo/SumTo と同じ双対ペア)なので、
+/// 二階微分も閉じる(tests/step47.rs で distinct な値で検証済み)。
+pub struct GatherGrad {
+    pub indices: Vec<usize>,
+    pub in_shape: Vec<usize>,
+}
+impl Forward for GatherGrad {
+    fn forward(&self, xs: &[ArrayD<f32>]) -> ArrayD<f32> {
+        let [gy] = xs else {
+            panic!("GatherGrad expects 1 input")
+        };
+        let mut gx = ndarray::ArrayD::<f32>::zeros(self.in_shape.clone());
+        let mut gx_view = gx.view_mut().into_dimensionality::<ndarray::Ix2>().unwrap();
+        let gy_view = gy.view().into_dimensionality::<ndarray::Ix1>().unwrap();
+        for (i, &col) in self.indices.iter().enumerate() {
+            gx_view[[i, col]] += gy_view[i];
+        }
+        gx
+    }
+}
+impl Function for GatherGrad {
+    fn backward(&self, _xs: &[Variable], ggy: &Variable) -> Vec<Variable> {
+        // GatherGrad の逆伝播は再び Gather になる (双対関係)
+        vec![
+            Gather {
+                indices: self.indices.clone(),
+            }
+            .call(std::slice::from_ref(ggy)),
+        ]
+    }
+}
+
+/// 本 ステップ47: softmax(合成版)。新規 Function は不要 — exp / (sum_axis + reshape +
+/// ブロードキャスト除算)の合成で、backward はステップ40のブロードキャスト機構が担う。
+/// reshape 先は「x.shape() の axis 番目を 1 に置き換えた形」(keepdims 相当)。
+/// 注意: 素朴な exp なのでロジットが ~88 を超えると f32 で inf(本家 simple 版と同じ制約。
+/// 対策は「行 max を引いてから exp」— 必要になったら)。
+pub fn softmax_simple(x: &Variable, axis: usize) -> Variable {
+    let x_exp = x.exp();
+    let sum_exp = x_exp.sum_axis(axis);
+
+    // sum_axis で潰れた軸を 1 として復元し、ブロードキャストできるようにする (keepdims 相当)
+    let mut sum_exp_shape = x.shape();
+    sum_exp_shape[axis] = 1;
+    let sum_exp_reshaped = sum_exp.reshape(&sum_exp_shape);
+
+    &x_exp / &sum_exp_reshaped
+}
+
+/// 本 ステップ47: softmax 交差エントロピー(合成版)−Σ log p[i, t\[i\]] / N。
+/// clip(1e-15, 1.0) が log(0) を防ぐ。ラベル t は微分対象でないため Variable ではなく
+/// &[usize](Gather の関数状態になる)。勾配の閉形式 (p−t)/N でテスト済み。
+pub fn softmax_cross_entropy_simple(x: &Variable, t: &[usize]) -> Variable {
+    let n = x.shape()[0];
+    let p = softmax_simple(x, 1);
+    let p_clipped = p.clip(1e-15, 1.0);
+    let log_p = p_clipped.ln();
+    let tlog_p = log_p.gather(t);
+    let sum_tlog_p = tlog_p.sum();
+    sum_tlog_p * (-1.0 / n as f32)
+}

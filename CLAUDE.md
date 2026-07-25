@@ -45,6 +45,7 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
 
 ## コマンド
 - テスト(全巻): `cargo test` / 単一巻: `cargo test -p volN`
+- テスト並列高速版: `cargo nextest run -p volN`(tests/ の全バイナリを跨いでテスト単位に並列実行。doc-test だけは対象外)
 - 型チェックのみ(速い): `cargo check`
 - `println!` を表示したいテスト: `cargo test -- --nocapture`
 
@@ -61,9 +62,16 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   第3ステージ(〜ステップ36)完了: Graphviz 可視化、高階微分(grad が Variable、
   backward が Variable 演算でグラフを作る、create_graph フラグ+no_grad ガード)、
   Weak によるリーク検証テスト付き。
-  第4ステージ進行中(〜ステップ43): reshape/transpose、broadcast_to/sum_to の双対、
-  四則演算のブロードキャスト対応(grad.shape == data.shape の不変条件を debug_assert)、
-  行列積、mean_squared_error/linear/Sigmoid、線形回帰と 1-10-1 MLP(sin 回帰)。
-  次はステップ44〜(Parameter/Layer — Python の継承+__setattr__ 相当を
-  Rust でどう設計するかの相談から。vol1 の Layer trait が先行事例)。
+  第4ステージ(ステップ37〜51)完了: テンソル対応(reshape/transpose、broadcast_to/
+  sum_to の双対、grad.shape == data.shape を debug_assert)、行列積、線形回帰。
+  Layer trait(params=名前なしホットパス/named_params="l1/W" 階層名、cleargrads は
+  デフォルト実装)、Linear/TwoLayerNet/MLP(活性化は fn ポインタ、Parameter は type
+  エイリアス)。Optimizer(SGD/MomentumSGD — params() の Rc ハンドル clone を保持、
+  split-borrow 不要)。分類系: Log/Clip/Gather-GatherGrad(双対+二階テスト)、
+  softmax_cross_entropy_simple(合成、閉形式 (p−t)/N で検証)、spiral 97%。
+  Dataset trait+DataLoader(IntoIterator for &mut で「1エポック=1 for ループ」、
+  シード RNG 注入)。MNIST: IDX パーサ再実装(u8 (N,1,28,28) 保持)+transform
+  関数ポインタ、ReLU(マスク定数×Mul の backward — 二階も自動で正しい)、
+  MLP 5 epoch 17 秒で test 97.7%。次はステップ52〜(第5ステージ: GPU/保存/
+  Dropout/CNN/RNN。53 で named_params の請求書、52 は wgpu 経験との擦り合わせ)。
 - vol2・vol4〜vol6: 未着手(vol2 は個人的興味の巻として後回し、vol3 を先行)。

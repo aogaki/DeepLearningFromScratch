@@ -10,6 +10,7 @@
 //! 使い方の実例は、ステップ番号付きの統合テスト(`tests/`)がそのまま目次になっている。
 //! 下の `pub use` 群は dezero/__init__.py 相当のファサード(`use vol3::*` で全部届く)。
 
+pub mod cnn;
 pub mod config;
 pub mod dataloaders;
 pub mod datasets;
@@ -22,6 +23,7 @@ pub mod optimizers;
 pub mod utils;
 pub mod variable;
 
+pub use cnn::*;
 pub use config::*;
 pub use function::*;
 pub use functions::*;

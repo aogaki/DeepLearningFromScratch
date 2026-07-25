@@ -620,3 +620,93 @@ pub fn dropout_with_rng(
         x.clone()
     }
 }
+
+/// 本 ステップ57: 指定した軸方向の最大値を取る関数。
+pub struct Max {
+    pub axis: Option<usize>,
+    pub keepdims: bool,
+}
+
+impl Max {
+    pub fn new(axis: Option<usize>, keepdims: bool) -> Self {
+        Self { axis, keepdims }
+    }
+}
+
+impl Forward for Max {
+    fn forward(&self, xs: &[ndarray::ArrayD<f32>]) -> ndarray::ArrayD<f32> {
+        let [x] = xs else {
+            panic!("Max expects 1 input")
+        };
+        if let Some(ax) = self.axis {
+            let mut y = x.fold_axis(ndarray::Axis(ax), f32::MIN, |&a, &b| a.max(b));
+            if self.keepdims {
+                y.insert_axis_inplace(ndarray::Axis(ax));
+            }
+            y.into_dyn()
+        } else {
+            let max_val = x.iter().fold(f32::MIN, |a, &b| a.max(b));
+            ndarray::arr0(max_val).into_dyn()
+        }
+    }
+}
+
+impl Function for Max {
+    fn backward(&self, xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let [x] = xs else {
+            panic!("Max expects 1 input")
+        };
+        let y_array = self.forward(&[x.data()]);
+
+        let mut y_shape = y_array.shape().to_vec();
+        let mut gy_shape = gy.shape();
+
+        if !self.keepdims {
+            if let Some(ax) = self.axis {
+                y_shape.insert(ax, 1);
+                gy_shape.insert(ax, 1);
+            } else if x.ndim() > 0 {
+                y_shape = vec![1; x.ndim()];
+                gy_shape = vec![1; x.ndim()];
+            }
+        }
+
+        let y_reshaped = y_array.into_shape_with_order(y_shape).unwrap();
+        let y_bcast = y_reshaped.broadcast(x.shape()).unwrap();
+
+        let cond_data = ndarray::Zip::from(x.data().view())
+            .and(y_bcast)
+            .map_collect(|&x_val, &y_val| if x_val == y_val { 1.0 } else { 0.0 });
+
+        let cond = Variable::new(cond_data.into_dyn());
+        let gy_reshaped = gy.reshape(&gy_shape);
+        let gy_bcast = gy_reshaped.broadcast_to(&x.shape());
+
+        vec![&gy_bcast * &cond]
+    }
+}
+pub struct TransposeAxes {
+    pub axes: Vec<usize>,
+}
+
+impl Forward for TransposeAxes {
+    fn forward(&self, xs: &[ndarray::ArrayD<f32>]) -> ndarray::ArrayD<f32> {
+        let [x] = xs else {
+            panic!("TransposeAxes expects 1 input")
+        };
+        x.view()
+            .permuted_axes(self.axes.clone())
+            .as_standard_layout()
+            .into_owned()
+    }
+}
+
+impl Function for TransposeAxes {
+    fn backward(&self, _xs: &[Variable], gy: &Variable) -> Vec<Variable> {
+        let mut inv_axes = vec![0; self.axes.len()];
+        for (i, &ax) in self.axes.iter().enumerate() {
+            inv_axes[ax] = i;
+        }
+        vec![gy.transpose_axes(&inv_axes)]
+    }
+}

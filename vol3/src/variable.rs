@@ -2,8 +2,8 @@ use crate::config::no_grad;
 use crate::function::Creator;
 use crate::function::Function;
 use crate::functions::{
-    Add, BroadcastTo, Cos, Div, Exp, MatMul, Mul, Neg, Pow, Reshape, Sigmoid, Sin, Square, Sub,
-    Sum, SumTo, Tanh, Transpose,
+    Add, BroadcastTo, Cos, Div, Exp, MatMul, Max, Mul, Neg, Pow, Reshape, Sigmoid, Sin, Square,
+    Sub, Sum, SumTo, Tanh, Transpose, TransposeAxes,
 };
 use ndarray::ArrayD;
 use std::cell::RefCell;
@@ -227,6 +227,47 @@ impl Variable {
 
     pub fn dropout(&self, dropout_ratio: f32) -> Variable {
         crate::functions::dropout(self, dropout_ratio)
+    }
+
+    pub fn transpose_axes(&self, axes: &[usize]) -> Variable {
+        TransposeAxes {
+            axes: axes.to_vec(),
+        }
+        .call(std::slice::from_ref(self))
+    }
+
+    pub fn max_axis(&self, axis: usize, keepdims: bool) -> Variable {
+        Max::new(Some(axis), keepdims).call(std::slice::from_ref(self))
+    }
+
+    pub fn im2col(
+        &self,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        pad: (usize, usize),
+        to_matrix: bool,
+    ) -> Variable {
+        crate::cnn::Im2Col::new(kernel_size, stride, pad, to_matrix)
+            .call(std::slice::from_ref(self))
+    }
+
+    pub fn conv2d_simple(
+        &self,
+        w: &Variable,
+        b: Option<&Variable>,
+        stride: (usize, usize),
+        pad: (usize, usize),
+    ) -> Variable {
+        crate::cnn::conv2d_simple(self, w, b, stride, pad)
+    }
+
+    pub fn pooling_simple(
+        &self,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        pad: (usize, usize),
+    ) -> Variable {
+        crate::cnn::pooling_simple(self, kernel_size, stride, pad)
     }
 
     pub fn ln(&self) -> Variable {

@@ -91,5 +91,12 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   モード判定は forward の一度きり、二階も自動)。dropout_with_rng がシード注入口、
   dropout/Variable::dropout は rand::rng() フォールバックの便利ラッパー。
   モード跨ぎ2シナリオ(train→test backward / test→train backward)を回帰テスト化。
-  次はステップ55〜57(CNN のメカニズム、conv2d/pooling)。
+  55〜57 完了: 新モジュール cnn.rs(純関数 im2col_array/col2im_array — スラック付き
+  バッファ+add_assign 累積、Im2Col/Col2Im の双対 Function、conv2d_simple/
+  pooling_simple は合成スタイル)。functions.rs に Max(x==y マスク、タイは全員に
+  勾配)と TransposeAxes(逆置換 backward)。教訓: gradient check は自己一致のみ —
+  pooling_simple の reshape 転置ずれ(to_matrix=false の 6D を直接 reshape)は
+  全テスト green のまま値が間違っていた。縮約・並べ替え関数には手計算の値テスト必須、
+  かつ値テストは非対称データで(全同値データは並べ替えに盲目)。
+  次はステップ58(代表的な CNN — VGG16)。
 - vol2・vol4〜vol6: 未着手(vol2 は個人的興味の巻として後回し、vol3 を先行)。

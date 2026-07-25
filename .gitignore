@@ -11,6 +11,10 @@
 # MNIST / datasets (re-downloadable, large)
 **/dataset/
 
+# 変換済み重み・ゴールデンデータ(fetch スクリプトで再生成可能、最大 500MB 級)
+# 本来の置き場は volN/dataset/ — クレート直下に一時的に置かれた場合の事故防止
+*.npz
+
 /dream/
 /vol1/output/
 /vol3/output/

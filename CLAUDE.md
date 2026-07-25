@@ -98,5 +98,11 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   pooling_simple の reshape 転置ずれ(to_matrix=false の 6D を直接 reshape)は
   全テスト green のまま値が間違っていた。縮約・並べ替え関数には手計算の値テスト必須、
   かつ値テストは非対称データで(全同値データは並べ替えに盲目)。
-  次はステップ58(代表的な CNN — VGG16)。
+  58 完了: Conv2d レイヤ、models.rs 新設(VGG16 — named_params が正、params は導出)。
+  fetch_vgg16.py(DeZero pretrained から重み+golden ペア (x,y) を npz 化、一度きり下準備)。
+  **VGG16 16層 forward が Python DeZero と 1e-4 で一致(パリティ儀式の初実戦)**。
+  release 1.8s / debug 121s のため #[ignore]+README 手順化。重みは dataset/weights/
+  (.gitignore に *.npz 追加済み — 528MB 事故防止)。
+  次はステップ59(RNN)。見どころ: 状態を持つレイヤ(隠れ状態の内部可変性)と
+  truncated BPTT のための unchain(グラフを切る操作)。
 - vol2・vol4〜vol6: 未着手(vol2 は個人的興味の巻として後回し、vol3 を先行)。

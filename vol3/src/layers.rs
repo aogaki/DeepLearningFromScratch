@@ -237,6 +237,66 @@ impl Layer for MLP {
     }
 }
 
+pub struct Conv2d {
+    pub w: Parameter,
+    pub b: Option<Parameter>,
+    pub stride: (usize, usize),
+    pub pad: (usize, usize),
+}
+
+impl Conv2d {
+    pub fn new(
+        in_channels: usize,
+        out_channels: usize,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        pad: (usize, usize),
+        nobias: bool,
+        rng: &mut impl rand::Rng,
+    ) -> Self {
+        // VGG16/He/Xavier scale. For consistency with DeZero, we use 1/sqrt(in_channels)
+        let std_dev = 1.0 / (in_channels as f32).sqrt();
+        let w_data = ndarray::Array::random_using(
+            (out_channels, in_channels, kernel_size.0, kernel_size.1),
+            ndarray_rand::rand_distr::Normal::new(0.0, std_dev).unwrap(),
+            rng,
+        )
+        .into_dyn();
+        let w = Parameter::new(w_data);
+
+        let b = if nobias {
+            None
+        } else {
+            let b_data = ndarray::Array::zeros((out_channels,)).into_dyn();
+            Some(Parameter::new(b_data))
+        };
+
+        Self { w, b, stride, pad }
+    }
+}
+
+impl Layer for Conv2d {
+    fn params(&self) -> Vec<Parameter> {
+        let mut p = vec![self.w.clone()];
+        if let Some(b) = &self.b {
+            p.push(b.clone());
+        }
+        p
+    }
+
+    fn named_params(&self) -> Vec<(String, Parameter)> {
+        let mut p = vec![("W".to_string(), self.w.clone())];
+        if let Some(b) = &self.b {
+            p.push(("b".to_string(), b.clone()));
+        }
+        p
+    }
+
+    fn forward(&self, x: &Variable) -> Variable {
+        x.conv2d_simple(&self.w, self.b.as_ref(), self.stride, self.pad)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -211,3 +211,9 @@ cargo test --release train_mnist_deep -- --ignored --nocapture  # 8.1 DeepConvNe
 cargo test --release test_train_mnist_deep_gpu_adam -- --ignored --nocapture  # GPU 版(Adam、テスト精度 99.4% peak)
 cargo test --release test_train_mnist_deep_gpu -- --ignored --nocapture       # GPU 版(素の SGD、98.97%)
 ```
+
+第3巻(vol3)の重いテスト(外部データ依存、学習など)も `#[ignore]` 付きです。VGG16 の推論パリティ確認は以下のように実行します(事前に `cd vol3 && python examples/fetch_vgg16.py` による重み取得が必要):
+
+```sh
+cargo test --release test_vgg16 -- --ignored --nocapture
+```

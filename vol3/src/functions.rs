@@ -588,3 +588,35 @@ pub fn softmax_cross_entropy_simple(x: &Variable, t: &[usize]) -> Variable {
     let sum_tlog_p = tlog_p.sum();
     sum_tlog_p * (-1.0 / n as f32)
 }
+
+/// スレッドローカルのグローバルRNGを使用してDropoutを適用する便利関数
+pub fn dropout(x: &Variable, dropout_ratio: f32) -> Variable {
+    dropout_with_rng(x, dropout_ratio, &mut rand::rng())
+}
+
+/// 乱数生成器(RNG)を明示的に受け取るDropoutの実装。
+/// 合成関数として実装されているため、手動でのbackwardは不要（乗算ノードとして計算グラフに記録される）。
+pub fn dropout_with_rng(
+    x: &Variable,
+    dropout_ratio: f32,
+    rng: &mut impl rand::RngCore,
+) -> Variable {
+    if crate::config::Config::train_mode() {
+        use ndarray_rand::rand_distr::{Distribution, Uniform};
+        let dist = Uniform::new(0.0, 1.0).unwrap();
+        let scale = 1.0 / (1.0 - dropout_ratio);
+
+        let mask_data = x.data().mapv(|_| {
+            if dist.sample(rng) > dropout_ratio {
+                scale
+            } else {
+                0.0
+            }
+        });
+
+        let mask = Variable::new(mask_data);
+        x * &mask
+    } else {
+        x.clone()
+    }
+}

@@ -4,11 +4,14 @@
 **Rust** へ自分の手で移植しながら学ぶリポジトリ。成果物よりも「自分で書いて理解すること」が目的で、
 Claude Code をガイド兼レビュアーとして一歩ずつ進めている。
 
+長期目標は学習にとどまらない: vol3 で作る自動微分フレームワークを、自身の研究
+(核物理 — ΔE-E 粒子識別の事後確率推定)の**本番ツールへ育てる**(下記ロードマップ)。
+
 ## 方針
 
 - **Rust のイディオムを優先**して写経・移植する(`ndarray` を NumPy の代わりに使用)。
 - 浮動小数は **`f32` で統一**。将来 [wgpu](https://wgpu.rs/) の compute シェーダに載せることを見据えている(WGSL に f64 が無いため)。
-- 各巻を独立した Cargo クレート(`vol1`〜`vol6`)として実装し、共有クレートは作らない(巻ごとに再実装して理解を深める)。
+- 各巻を独立した Cargo クレート(`vol1`〜`vol6`)として実装し、共有クレートは作らない(巻ごとに再実装して理解を深める)。ただし vol3 のフレームワークは将来、独自名のクレートに昇格させて vol4 以降が依存する形へ移行する予定(判断の分岐点は vol4 後半 — ロードマップ参照)。
 - 常に `cargo test` を green に保ち、浮動小数の比較は誤差付きで行う。
 - 本は各節のスクリプトをコマンドラインで実行していくスタイルだが、この移植では**実験も含めて基本 `#[test]` に書く**(学習ループなど遅いものは `#[ignore]` を付け、名前指定で明示的に実行する)。ファイル出力を伴う可視化などに限り `examples/` を使う。
 
@@ -18,10 +21,33 @@ Claude Code をガイド兼レビュアーとして一歩ずつ進めている�
 | ---- | --------- | -------------------------------------------------------------------------------------- |
 | vol1 | **完了** | 2章 パーセプトロン / 3章 順伝播・softmax・MNIST 推論(93.5%)/ 4章 損失関数・数値微分・ミニバッチ学習 / 5章 誤差逆伝播(レイヤ実装・勾配確認・高速学習: 損失 2.3→0.26 を約30秒/1000回)/ 6章 学習テクニック(Optimizer 4種・He 初期化・BatchNorm・Weight decay・Dropout・ハイパーパラメータ探索を rayon 並列化)/ 7章 CNN(im2col・Conv/Pooling レイヤ・SimpleConvNet で MNIST テスト精度 **98.75%**・フィルタ可視化)/ 8.1 ディープ CNN(Layer トレイトで全層を `Vec<Box<dyn Layer>>` に、conv 6 層の DeepConvNet で MNIST テスト精度 **99.32%**、本の ~99.4% と 1σ 以内)/ **wgpu GPU 化(8.3 の先の独自拡張)**: DeepConvNet の forward・backward・Optimizer を WGSL シェーダ 17 本で GPU 常駐化。カーネル最適化 3 段(vec4 レジスタタイル → workgroup リダクション → タイル×リダクション)で **1 iter 0.41 s → 21.8 ms(×18.8)**、20 エポック 82 分 → **4.5 分**、Adam で **テスト精度 99.41%(peak)** — CPU 版と同水準を達成。記録: [`vol1/docs/wgpu-journey.md`](vol1/docs/wgpu-journey.md) |
 | vol2 | 未着手    | (個人的興味の巻として後回し)                                                        |
-| vol3 | **進行中** | **第3ステージ(〜ステップ36)完了**: `Variable`(`Rc<RefCell>` の薄いハンドル — Python の共有参照を Rust で明示)/ Function を `Forward`・`Function`・`Creator` の 3 trait に分割し、`call(self)` が関数を `Node<F>` としてグラフへ移す(「入力未設定」状態が型で排除される設計)/ 数値微分(f32 では eps ≈ ∛ε ≈ 5e-3 と導出)/ 自動逆伝播(ループ+世代管理のトポロジカル順+勾配累積)/ `no_grad`(thread_local + RAII ガード)/ 演算子オーバーロード(`std::ops` 4通り+スカラー混合をマクロ量産、`3.0 * &x` が `__rmul__` なしで書ける)/ Graphviz 可視化 / **高階微分(double backprop)** — grad を Variable にして backward 自体がグラフを作る(create_graph+no_grad ガード、Rc 循環リークは Weak テストで実証)。Goldstein-Price の勾配が本と厳密一致。**第4ステージ(37〜51)完了**: テンソル対応(reshape/transpose・broadcast_to/sum_to の双対ペア、勾配形状の不変条件 grad.shape == data.shape を debug_assert で確立)・行列積・線形回帰(loss がノイズ分散 1/12 の理論下限に到達)・**Layer trait**(params は名前なしホットパス/named_params は "l1/W" 階層名に分離)で Linear・TwoLayerNet・MLP — 同一の決定的軌道を step43〜46 の5実装がテストで相互に担保・Optimizer(SGD/MomentumSGD、`params()` の Rc ハンドルで所有権問題が消滅)・softmax 交差エントロピー(Gather/GatherGrad 双対+二階微分テスト、閉形式 (p−t)/N で検証)・spiral 分類 97%・**Dataset/DataLoader**(`IntoIterator for &mut` で1エポック=1 for ループ)・**MNIST**(IDX パーサ再実装・u8 保持+transform・ReLU)を MLP 5エポック **17秒** で test **97.7%** |
+| vol3 | **進行中** | **第3ステージ(〜ステップ36)完了**: `Variable`(`Rc<RefCell>` の薄いハンドル — Python の共有参照を Rust で明示)/ Function を `Forward`・`Function`・`Creator` の 3 trait に分割し、`call(self)` が関数を `Node<F>` としてグラフへ移す(「入力未設定」状態が型で排除される設計)/ 数値微分(f32 では eps ≈ ∛ε ≈ 5e-3 と導出)/ 自動逆伝播(ループ+世代管理のトポロジカル順+勾配累積)/ `no_grad`(thread_local + RAII ガード)/ 演算子オーバーロード(`std::ops` 4通り+スカラー混合をマクロ量産、`3.0 * &x` が `__rmul__` なしで書ける)/ Graphviz 可視化 / **高階微分(double backprop)** — grad を Variable にして backward 自体がグラフを作る(create_graph+no_grad ガード、Rc 循環リークは Weak テストで実証)。Goldstein-Price の勾配が本と厳密一致。**第4ステージ(37〜51)完了**: テンソル対応(reshape/transpose・broadcast_to/sum_to の双対ペア、勾配形状の不変条件 grad.shape == data.shape を debug_assert で確立)・行列積・線形回帰(loss がノイズ分散 1/12 の理論下限に到達)・**Layer trait**(params は名前なしホットパス/named_params は "l1/W" 階層名に分離)で Linear・TwoLayerNet・MLP — 同一の決定的軌道を step43〜46 の5実装がテストで相互に担保・Optimizer(SGD/MomentumSGD、`params()` の Rc ハンドルで所有権問題が消滅)・softmax 交差エントロピー(Gather/GatherGrad 双対+二階微分テスト、閉形式 (p−t)/N で検証)・spiral 分類 97%・**Dataset/DataLoader**(`IntoIterator for &mut` で1エポック=1 for ループ)・**MNIST**(IDX パーサ再実装・u8 保持+transform・ReLU)を MLP 5エポック **17秒** で test **97.7%** / **第5ステージ着手**(52 GPU は設計読書のみと決定、53 save/load から実装) |
 | vol4 | 未着手    | —                                                                                      |
 | vol5 | 未着手    | —                                                                                      |
 | vol6 | 未着手    | —                                                                                      |
+
+## ロードマップ
+
+学習(写経)の先に、フレームワークを研究の本番ツールへ育てる計画(2026-07 策定)。
+フェーズによってコードの書き手が変わる:
+
+- **写経フェーズ**(本のステップ): 私が書き、Claude はガイド兼レビュアーに徹する(従来通り)。
+- **本番ツール化フェーズ**: vibe coding(Claude が実装を書く)。品質の錨は逐行理解ではなく、
+  **テストスイート + PyTorch パリティ検証**(同一データ・同一初期値での一致試験)に置く。
+
+順路:
+
+1. **vol3 第5ステージ**(53 save/load → 54 Dropout → 55〜 CNN、以降 RNN)。
+   ステップ52(GPU/CuPy)は**設計読書のみ** — Rust に CuPy 相当は無く、GPU 化は後段で wgpu により行う。
+2. **vol4(強化学習)**: 前半(バンディット〜TD 法)はフレームワーク不要の素の Rust。
+   後半(関数近似・DQN〜)に入る時点でフレームワーク共有の最終判断。
+   **vol5(生成モデル)**は SBI 研究に直結する巻で、フレームワーク成長の主要ドライバ。
+3. **クレート昇格 + v1.0 凍結**: フレームワークに独自名を付けて独立クレート化。
+4. **PyTorch パリティ検証**を「本番昇格の儀式」として整備。
+5. **Tauri GUI**: 学習モニタ・研究用フロントエンド(フレームワーククレートを直接リンク、単一バイナリ)。
+6. **wgpu GPU 化(v2)**: 実測で必要と感じてから。vol1 の GPU 化経験を汎用フレームワークに一般化する。
+
+研究側の照準は 2027 年春に再開する PID(ΔE-E)解析。
 
 ## 構成
 

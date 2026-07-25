@@ -225,6 +225,10 @@ impl Variable {
         crate::functions::relu(self)
     }
 
+    pub fn dropout(&self, dropout_ratio: f32) -> Variable {
+        crate::functions::dropout(self, dropout_ratio)
+    }
+
     pub fn ln(&self) -> Variable {
         crate::functions::Log.call(std::slice::from_ref(self))
     }

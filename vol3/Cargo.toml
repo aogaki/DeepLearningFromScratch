@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ndarray = "0.17.2"
+ndarray-npy = { version = "0.10.0", features = ["npz"] }
 ndarray-rand = "0.16.0"
 rand = "0.9"
 rand_chacha = "0.9"

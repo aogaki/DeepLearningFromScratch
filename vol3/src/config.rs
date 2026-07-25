@@ -2,6 +2,7 @@ use std::cell::Cell;
 
 thread_local! {
     static ENABLE_BACKPROP: Cell<bool> = const { Cell::new(true) };
+    static TRAIN_MODE: Cell<bool> = const { Cell::new(true) };
 }
 
 /// 本 ステップ18「メモリ使用量を減らすモード」の enable_backprop 設定。
@@ -15,6 +16,12 @@ impl Config {
     }
     pub fn set_enable_backprop(b: bool) {
         ENABLE_BACKPROP.with(|f| f.set(b));
+    }
+    pub fn train_mode() -> bool {
+        TRAIN_MODE.with(|f| f.get())
+    }
+    pub fn set_train_mode(b: bool) {
+        TRAIN_MODE.with(|f| f.set(b));
     }
 }
 
@@ -37,4 +44,24 @@ pub fn no_grad() -> NoGradGuard {
     let prev = Config::enable_backprop();
     Config::set_enable_backprop(false);
     NoGradGuard { prev }
+}
+
+/// 訓練モードを一時的に無効化(推論モード)にする RAII ガード。
+#[must_use = "ガードは変数に束縛してください(例: let _guard = test_mode();)。束縛しないと即座に drop されて無効になります。"]
+pub struct TestModeGuard {
+    prev: bool,
+}
+
+impl Drop for TestModeGuard {
+    fn drop(&mut self) {
+        Config::set_train_mode(self.prev);
+    }
+}
+
+/// 本 ステップ54: このガードが生きている間、モデルは推論モードとして振る舞う。
+#[must_use = "ガードは変数に束縛してください(例: let _guard = test_mode();)。束縛しないと即座に drop されて無効になります。"]
+pub fn test_mode() -> TestModeGuard {
+    let prev = Config::train_mode();
+    Config::set_train_mode(false);
+    TestModeGuard { prev }
 }

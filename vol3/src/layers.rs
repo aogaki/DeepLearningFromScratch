@@ -24,6 +24,59 @@ pub trait Layer {
         }
     }
 
+    /// ステップ53: パラメータを .npz 形式でファイルに保存する。
+    /// Python (NumPy) と互換性を持たせるため、キー名には `.npy` 拡張子が自動的に付与される
+    /// (ndarray-npy ライブラリ側の仕様)。
+    fn save_weights(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        let mut npz = ndarray_npy::NpzWriter::new(file);
+        for (name, param) in self.named_params() {
+            let arr = param.data();
+            npz.add_array(&name, &arr).map_err(std::io::Error::other)?;
+        }
+        npz.finish().map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    /// ステップ53: .npz 形式のファイルからパラメータを読み込み、既存のパラメータに in-place で代入する。
+    /// 遅延初期化を持たないため、モデル構築直後にそのまま読み込むことができる。
+    fn load_weights(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let file = std::fs::File::open(path)?;
+        let mut npz = ndarray_npy::NpzReader::new(file).map_err(std::io::Error::other)?;
+        let mut loaded_arrays = Vec::new();
+        let named_params = self.named_params();
+
+        // 1パス目: 全パラメータを読み込み、形状の検証を行う
+        for (name, param) in &named_params {
+            let loaded: ndarray::ArrayD<f32> = npz.by_name(name).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to load '{}': {}", name, e),
+                )
+            })?;
+
+            let expected_shape = param.shape();
+            if loaded.shape() != expected_shape {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Shape mismatch for {}: expected {:?}, got {:?}",
+                        name,
+                        expected_shape,
+                        loaded.shape()
+                    ),
+                ));
+            }
+            loaded_arrays.push(loaded);
+        }
+
+        // 2パス目: 全ての検証に通過した場合のみ、既存のパラメータに in-place で代入する
+        for ((_, param), loaded) in named_params.into_iter().zip(loaded_arrays.into_iter()) {
+            param.set_data(loaded);
+        }
+        Ok(())
+    }
+
     /// 順伝播(単一入出力用)。
     /// 将来 `Vec<Box<dyn Layer>>` などに格納できるよう、動的ディスパッチ(object-safe)を考慮した設計。
     fn forward(&self, x: &Variable) -> Variable;

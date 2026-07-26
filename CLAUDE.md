@@ -121,4 +121,10 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   (SimpleRNN は 1.5 超)、100 epoch release 0.98s。
   **★ vol3 本編(60ステップ)完走(2026-07-25)。**次はロードマップ順で vol4 前半
   (素の Rust)、クレート昇格の判断は vol4 後半入り口。
-- vol2・vol4〜vol6: 未着手(vol2 は個人的興味の巻として後回し、vol3 を先行)。
+- **vol4: 進行中(2026-07-26 開始)**。前半(1〜6章: バンディット〜TD 法)はフレームワーク不要の
+  素の Rust・写経モード。後半(7章〜: 関数近似・DQN)入り口でフレームワーク共有を最終判断。
+  1章 バンディット問題 完了(2026-07-26): Bandit/NonStatBandit/Agent/AlphaAgent、
+  update_q_step 一般化(1/n は特殊ケース)、utils::argmax(Option、max_by は同率で最後)、
+  RNG は引数渡し。実験は tests/ch01.rs(章単位命名 chNN.rs、ゼロ埋め)で本の結論を assert
+  (ペアドシード比較)。次: 2章 MDP(読章中心、実装の本格再開は 4章 GridWorld)。
+- vol2・vol5・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

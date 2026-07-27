@@ -108,11 +108,8 @@ pub fn update_q(q: f32, reward: f32, n: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::approx_eq;
     use rand::SeedableRng;
-
-    fn approx_eq(a: f32, b: f32, epsilon: f32) -> bool {
-        (a - b).abs() < epsilon
-    }
 
     #[test]
     fn test_update_vs_average() {

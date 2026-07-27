@@ -31,6 +31,7 @@ pub struct GridWorld {
     wall_state: HashSet<(usize, usize)>,
     goal_state: (usize, usize),
     start_state: (usize, usize),
+    agent_state: (usize, usize), // エージェントの体を含む、脳の外側は環境として扱う。
 }
 impl GridWorld {
     pub fn new(
@@ -48,6 +49,7 @@ impl GridWorld {
             wall_state,
             goal_state,
             start_state,
+            agent_state: start_state,
         }
     }
 
@@ -61,6 +63,7 @@ impl GridWorld {
         let wall_state = HashSet::from([(1, 1)]); // 壁マス
         let goal_state = (0, 3);
         let start_state = (2, 0);
+
         GridWorld {
             height,
             width,
@@ -68,6 +71,7 @@ impl GridWorld {
             wall_state,
             goal_state,
             start_state,
+            agent_state: start_state,
         }
     }
 
@@ -110,6 +114,21 @@ impl GridWorld {
         next_state: (usize, usize),
     ) -> f32 {
         *self.reward_map.get(&next_state).unwrap_or(&0.0)
+    }
+
+    pub fn reset(&mut self) -> (usize, usize) {
+        self.agent_state = self.start_state;
+        self.agent_state
+    }
+
+    pub fn step(&mut self, action: Action) -> ((usize, usize), f32, bool) {
+        let state = self.agent_state;
+        let next_state = self.next_state(state, action);
+        let reward = self.reward(state, action, next_state);
+        let done = self.is_goal(next_state);
+
+        self.agent_state = next_state;
+        (next_state, reward, done)
     }
 
     // ゴール状態（終端状態）かどうか
@@ -202,5 +221,49 @@ mod tests {
         assert!(!gw.is_goal((1, 3)));
         // 通常マスも非終端
         assert!(!gw.is_goal((2, 0)));
+    }
+
+    #[test]
+    fn test_reset_and_step() {
+        let mut gw = GridWorld::make_default();
+        let initial_state = gw.reset();
+        assert_eq!(initial_state, (2, 0));
+        // ゴールまでの最短ルート
+        gw.step(Action::Right); // (2,1)
+        gw.step(Action::Right); // (2,2)
+        gw.step(Action::Up); // (1,2)
+        gw.step(Action::Up); // (0,2)
+
+        // ゴール到達
+        let (next_state, reward, done) = gw.step(Action::Right);
+        assert_eq!(next_state, (0, 3));
+        assert_eq!(reward, 1.0);
+        assert!(done);
+        // 1. 【追加】エピソード終了後の reset の検出力
+        // ゴール(0,3)にいる状態から、ちゃんとスタート地点に戻るかを確認
+        let reset_state = gw.reset();
+        assert_eq!(reset_state, (2, 0));
+    }
+
+    #[test]
+    fn test_step_bomb_is_not_terminal() {
+        // 2. 【追加】爆弾マスは「ペナルティを食らうが通過できる」ことの封印
+        let mut gw = GridWorld::make_default();
+        gw.reset();
+        // 爆弾マス(1,3)へのルート（壁を避けて下から回る）
+        gw.step(Action::Right); // (2,1)
+        gw.step(Action::Right); // (2,2)
+        gw.step(Action::Up); // (1,2)
+
+        // 爆弾へ踏み込む
+        let (next_state, reward, done) = gw.step(Action::Right);
+        assert_eq!(next_state, (1, 3));
+        assert_eq!(reward, -1.0); // ペナルティ
+        assert!(!done); // ★重要：ここでエピソードは終わらない
+        // 爆弾マスから抜け出してゴールできることも確認
+        let (next_state, reward, done) = gw.step(Action::Up);
+        assert_eq!(next_state, (0, 3));
+        assert_eq!(reward, 1.0);
+        assert!(done);
     }
 }

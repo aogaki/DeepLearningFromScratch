@@ -132,5 +132,11 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   (Policy 型、eval_onestep/policy_eval、action_values 共有ヘルパー、greedy_policy、
   policy_iter、value_iter)。検証は図4-13 パリティ+γべき手計算表+アルゴリズム間
   クロスチェック。教訓: 環境の転記ミスは自己一致テストで検出不能(2マス世界の壁 −1 抜け)。
-  次: 5章 モンテカルロ法(GridWorld に step/reset が生える)。
+  5章 モンテカルロ法 完了(2026-07-27): GridWorld に agent_state/reset/step(境界=脳、
+  体は環境)、mc.rs(RandomAgent は update_q 再利用の every-visit MC、McAgent は
+  Q+ε-greedy+固定α、greedy_probs)。MC↔DP クロスチェック(1万エピソード、tol 0.05)。
+  MC 制御は「全状態最適」を assert せず greedy ロールアウトの性能で検証(オフ経路の
+  局所解は診断出力に格下げ — ε-greedy オン方策の教科書的病理を実地観測)。
+  重点サンプリングは推定量の分散を試行反復で測る設計(b を π に近づけ分散 1/4)。
+  次: 6章 TD 法(td.rs 予定 — TD 方策評価、SARSA、方策オフ SARSA、Q 学習)。
 - vol2・vol5・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

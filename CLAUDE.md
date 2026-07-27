@@ -126,5 +126,11 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   1章 バンディット問題 完了(2026-07-26): Bandit/NonStatBandit/Agent/AlphaAgent、
   update_q_step 一般化(1/n は特殊ケース)、utils::argmax(Option、max_by は同率で最後)、
   RNG は引数渡し。実験は tests/ch01.rs(章単位命名 chNN.rs、ゼロ埋め)で本の結論を assert
-  (ペアドシード比較)。次: 2章 MDP(読章中心、実装の本格再開は 4章 GridWorld)。
+  (ペアドシード比較)。2〜3章は読章。
+  4章 動的計画法 完了(2026-07-27): grid_world.rs(Action enum、None を HashMap+HashSet に
+  分解、states() は壁除外・ゴールは含む、終端はゴールのみ — 爆弾は通過可)+ dp.rs
+  (Policy 型、eval_onestep/policy_eval、action_values 共有ヘルパー、greedy_policy、
+  policy_iter、value_iter)。検証は図4-13 パリティ+γべき手計算表+アルゴリズム間
+  クロスチェック。教訓: 環境の転記ミスは自己一致テストで検出不能(2マス世界の壁 −1 抜け)。
+  次: 5章 モンテカルロ法(GridWorld に step/reset が生える)。
 - vol2・vol5・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

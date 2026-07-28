@@ -16,6 +16,15 @@ pub fn approx_eq(a: f32, b: f32, tol: f32) -> bool {
     (a - b).abs() < tol
 }
 
+/// 1次元の f32 配列ビューから最大値のインデックスを返す
+pub fn argmax_f32(row: ndarray::ArrayView1<'_, f32>) -> usize {
+    row.into_iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
 /// 方策（Policy）と現在の状態から、確率的に行動をサンプリングする。
 /// 未知の状態（方策に未登録）の場合は、一様ランダムに選ぶ。
 pub fn sample_action(pi: &Policy, state: (usize, usize), rng: &mut StdRng) -> Action {

@@ -53,8 +53,8 @@ fn test_8_1_2_random_agent() {
 }
 
 // ループ本体を括り出したヘルパー関数
-// (訓練中の最大報酬, 学習完了後のGreedy報酬) を返す
-fn run_dqn_training(seed: u64) -> (f32, f32) {
+// (訓練中の最大報酬, 学習完了後のGreedy報酬, 学習完了後の初期状態における最大Q値) を返す
+fn run_dqn_training(seed: u64, use_double_dqn: bool) -> (f32, f32, f32) {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut env = CartPole::v0();
 
@@ -78,6 +78,7 @@ fn run_dqn_training(seed: u64) -> (f32, f32) {
         epsilon,
         &mut rng,
     );
+    agent.use_double_dqn = use_double_dqn;
     let mut buffer = ReplayBuffer::<Experience>::new(buffer_size, batch_size);
 
     let mut max_reward_so_far: f32 = 0.0;
@@ -111,6 +112,10 @@ fn run_dqn_training(seed: u64) -> (f32, f32) {
     // --- ロールアウト評価 (本家 p.250 の締め) ---
     agent.epsilon = 0.0; // 完全な Greedy 方策に切り替え
     let mut state = env.reset(&mut rng);
+
+    // 過大評価の検証用に、初期状態での最大Q値を記録
+    let q_s0 = agent.max_q(&state);
+
     let mut greedy_reward = 0.0;
 
     loop {
@@ -123,7 +128,7 @@ fn run_dqn_training(seed: u64) -> (f32, f32) {
         }
         state = next_state;
     }
-    (max_reward_so_far, greedy_reward)
+    (max_reward_so_far, greedy_reward, q_s0)
 }
 // ---------------------------------------------------------
 // 8.2.5 DQNの複数シード評価テスト
@@ -138,7 +143,7 @@ fn test_8_2_5_dqn_multi_seed() {
     println!("Running DQN training on {} seeds...", seeds.len());
 
     for &seed in &seeds {
-        let (max_train, greedy) = run_dqn_training(seed);
+        let (max_train, greedy, _) = run_dqn_training(seed, false);
         println!(
             "Seed {}: Max Train Reward = {}, Final Greedy Reward = {}",
             seed, max_train, greedy
@@ -158,5 +163,65 @@ fn test_8_2_5_dqn_multi_seed() {
         "DQN implementation failed. Only {} out of {} seeds learned successfully.",
         success_count,
         seeds.len()
+    );
+}
+
+// ---------------------------------------------------------
+// 8.4 Double DQN の効果測定テスト
+// 実行手順: cargo test test_8_4_double_dqn --release -- --ignored --nocapture
+// ---------------------------------------------------------
+#[test]
+#[ignore]
+fn test_8_4_double_dqn() {
+    let seeds = [42, 43, 44, 45, 46, 303, 404, 606, 808, 909];
+    let mut normal_success = 0;
+    let mut double_success = 0;
+
+    println!(
+        "Comparing Normal DQN vs Double DQN on {} seeds...",
+        seeds.len()
+    );
+    println!("----------------------------------------------------------------------");
+    println!(" Seed | Normal Greedy | Double Greedy | Normal Q(s0) | Double Q(s0) ");
+    println!("----------------------------------------------------------------------");
+
+    for &seed in &seeds {
+        // 同一シードで通常DQNとDouble DQNをそれぞれ学習・評価
+        let (_, normal_greedy, normal_q) = run_dqn_training(seed, false);
+        let (_, double_greedy, double_q) = run_dqn_training(seed, true);
+
+        println!(
+            " {:>4} | {:>13} | {:>13} | {:>12.2} | {:>12.2} ",
+            seed, normal_greedy, double_greedy, normal_q, double_q
+        );
+
+        if normal_greedy >= 150.0 {
+            normal_success += 1;
+        }
+        if double_greedy >= 150.0 {
+            double_success += 1;
+        }
+    }
+    println!("----------------------------------------------------------------------");
+    println!(
+        "Normal DQN Success rate: {} / {}",
+        normal_success,
+        seeds.len()
+    );
+    println!(
+        "Double DQN Success rate: {} / {}",
+        double_success,
+        seeds.len()
+    );
+    println!("----------------------------------------------------------------------");
+
+    // 論点1: 少なくとも「両変種とも過半数で健全に学習できていること」を最低限のアサートとする
+    assert!(
+        normal_success >= 6,
+        "Normal DQN failed sanity check (success < 6/10)."
+    );
+    assert!(
+        double_success >= 6,
+        "Double DQN failed sanity check (success < 6/10)."
     );
 }

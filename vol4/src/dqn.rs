@@ -1,4 +1,5 @@
 use crate::cart_pole::CartPoleAction;
+use crate::utils::argmax_f32;
 use ndarray::Array2;
 use rand::RngExt;
 use rand::rngs::StdRng;
@@ -73,6 +74,7 @@ pub struct DQNAgent {
     pub epsilon: f32,
     pub action_size: usize,
     pub state_size: usize,
+    pub use_double_dqn: bool, // 追加
 }
 impl DQNAgent {
     pub fn new(
@@ -102,6 +104,7 @@ impl DQNAgent {
             epsilon,
             action_size,
             state_size,
+            use_double_dqn: false, // デフォルトは false
         };
         agent.sync_qnet();
         agent
@@ -135,16 +138,25 @@ impl DQNAgent {
             let qs = self.q_net.forward(&state_var);
             let qs_data = qs.data().into_dimensionality::<ndarray::Ix2>().unwrap();
 
-            // max_by ではタプルを分解せず、.1 で値（&f32）にアクセスする
-            let max_a = qs_data
-                .row(0)
-                .into_iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+            let max_a = argmax_f32(qs_data.row(0));
             CartPoleAction::from_usize(max_a)
         }
+    }
+
+    /// 特定の状態における最大のQ値を返す (過大評価の測定用)
+    pub fn max_q(&self, state: &[f32; 4]) -> f32 {
+        let state_var = Variable::new(
+            Array2::from_shape_vec((1, self.state_size), state.to_vec())
+                .unwrap()
+                .into_dyn(),
+        );
+        let qs = self.q_net.forward(&state_var);
+        let qs_data = qs.data().into_dimensionality::<ndarray::Ix2>().unwrap();
+        qs_data
+            .row(0)
+            .into_iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max)
     }
 
     /// ReplayBuffer からサンプリングしたバッチで学習を行う
@@ -174,33 +186,54 @@ impl DQNAgent {
         // 2. 現在のQ値を予測し、選択した行動の列だけを Gather で抽出 (qs[:, actions] 相当)
         let qs = self.q_net.forward(&states_var);
         let q = qs.gather(&actions);
-        // 3. 次の最大のQ値を予測 (target_q_net を使用)
-        // ここで .data() を取り出すことで、DeZero の .unchain() と完全に同じ
-        // 「計算グラフの切断（勾配を流さない）」を実現。
-        let next_qs = self.target_q_net.forward(&next_states_var);
-        let next_qs_data = next_qs
+
+        // 3. 次のQ値を予測し、ターゲットを計算
+        // ここで .data() を取り出すことで、DeZero の .unchain() と完全に同じグラフ切断を実現。
+        let next_qs_target = self.target_q_net.forward(&next_states_var);
+        let next_qs_target_data = next_qs_target
             .data()
             .into_dimensionality::<ndarray::Ix2>()
             .unwrap();
-
-        // batch と予測したQ値の行を 1対1 でペアにして map 変換する
-        let target_vec: Vec<f32> = batch
-            .iter()
-            .zip(next_qs_data.rows())
-            .map(|((_s, _a, reward, _ns, done), next_q_row)| {
-                let next_q_max = if *done {
-                    0.0
-                } else {
-                    next_q_row
+        let next_q_max_vec: Vec<f32> = if self.use_double_dqn {
+            // Double DQN: アクション選択は q_net、価値の評価は target_q_net
+            let next_qs_online = self.q_net.forward(&next_states_var);
+            let next_qs_online_data = next_qs_online
+                .data()
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            next_qs_online_data
+                .rows()
+                .into_iter()
+                .zip(next_qs_target_data.rows())
+                .map(|(online_row, target_row)| {
+                    let max_a = argmax_f32(online_row);
+                    target_row[max_a]
+                })
+                .collect()
+        } else {
+            // 通常の DQN: アクション選択も価値の評価も target_q_net (単純な max)
+            next_qs_target_data
+                .rows()
+                .into_iter()
+                .map(|target_row| {
+                    target_row
                         .into_iter()
                         .copied()
                         .fold(f32::NEG_INFINITY, f32::max)
-                };
-                reward + self.gamma * next_q_max
+                })
+                .collect()
+        };
+        // 報酬 + γ * 次のQ値 を計算
+        let target_vec: Vec<f32> = batch
+            .iter()
+            .zip(next_q_max_vec)
+            .map(|((_s, _a, reward, _ns, done), next_q_max)| {
+                let next_q = if *done { 0.0 } else { next_q_max };
+                reward + self.gamma * next_q
             })
             .collect();
-        let target_var = Variable::new(ndarray::Array1::from_vec(target_vec).into_dyn());
 
+        let target_var = Variable::new(ndarray::Array1::from_vec(target_vec).into_dyn());
         // 4. 損失計算と逆伝播
         self.q_net.cleargrads();
         let loss = mean_squared_error(&q, &target_var);

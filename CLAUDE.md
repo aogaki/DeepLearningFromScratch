@@ -150,5 +150,18 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   例外は、予定されていた最終判断による。準備として vol3 の rand を 0.9→0.10 に統一
   (RngCore→Rng・Rng→RngExt 改名、ndarray-rand は 0.10 対応版が無く削除 →
   utils::random_array で代替、ChaCha8 の乱数列は不変でシード固定テスト無傷、
-  87 テスト green)。次: 7章(ニューラルネットワークと Q 学習)。
+  87 テスト green)。
+  7章 ニューラルネットワークと Q 学習 完了(2026-07-28): vol3 の初実戦投入(MLP/SGD/
+  mean_squared_error/relu/Variable::gather が無改造で噛み合う)。本の 7.1〜7.3(DeZero
+  復習・線形回帰・NN)は vol3 履修済みでスキップ、7.4 のみ実装: qlearn_nn.rs(one_hot
+  ヘルパー+QLearningNNAgent — ε-greedy の get_action、update は qs.gather で q[:,action]
+  切り出し(本家 p.228 準拠)、next_q_max は .data() の f32 取り出し=本家 unchain 相当、
+  done で next_q=0)。Action::to_usize(as キャスト)/from_usize(match)を追加、all() は
+  from_usize から導出して対応表の正を1箇所に、往復テストで宣言順との一致を封印。
+  検証は性能ベース(本家は loss 曲線目視): 1000 エピソード学習→ε=0 greedy ロールアウトが
+  20 歩以内ゴール・reward approx_eq 1.0。debug 3.4s で #[ignore] 不要。教訓: 非選択行動の
+  Q も隠れ層共有で更新後微動(出力層の勾配は厳密 0 — ch8 target network への伏線)。
+  rustc の unused_assignments は入れ子 for 内の dead store を見逃す(最小再現で確認)。
+  次: 8章 DQN — 最初の議題は CartPole 環境の用意(Gym は本の学習対象外なので、
+  物理の移植は「一度きりの下準備」として Claude が書く選択肢あり)。
 - vol2・vol5・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

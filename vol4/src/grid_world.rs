@@ -10,7 +10,12 @@ pub enum Action {
 impl Action {
     // action_space() で返す順番に合わせる
     pub fn all() -> [Action; 4] {
-        [Action::Up, Action::Down, Action::Left, Action::Right]
+        [
+            Self::from_usize(0),
+            Self::from_usize(1),
+            Self::from_usize(2),
+            Self::from_usize(3),
+        ]
     }
 
     // 行動に対応する移動量 (dy, dx)
@@ -20,6 +25,21 @@ impl Action {
             Action::Down => (1, 0),
             Action::Left => (0, -1),
             Action::Right => (0, 1),
+        }
+    }
+
+    // usize への変換（ここで enum のメモリ上の並びを利用）
+    pub fn to_usize(self) -> usize {
+        self as usize
+    }
+    // usize からの変換（ここを to_usize と対にする）
+    pub fn from_usize(idx: usize) -> Self {
+        match idx {
+            0 => Action::Up,
+            1 => Action::Down,
+            2 => Action::Left,
+            3 => Action::Right,
+            _ => panic!("Invalid action index"),
         }
     }
 }
@@ -157,6 +177,21 @@ impl GridWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_action_usize_roundtrip() {
+        // 全バリアントについて、usize への変換と復元が完全に一致することを保証する
+        // これにより、将来バリアントの宣言順が変更された際のサイレントなバグを検知する
+        for &action in &Action::all() {
+            let idx = action.to_usize();
+            let restored = Action::from_usize(idx);
+            assert_eq!(
+                action, restored,
+                "Action roundtrip failed for index {}. Check enum declaration order and from_usize match arms.",
+                idx
+            );
+        }
+    }
 
     #[test]
     fn test_next_state() {

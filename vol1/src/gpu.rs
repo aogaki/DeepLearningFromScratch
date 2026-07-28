@@ -1097,20 +1097,30 @@ impl GpuAdam {
             let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("adam_m"),
                 size: (elements * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            GpuTensor { buffer, shape: param.shape }
+            GpuTensor {
+                buffer,
+                shape: param.shape,
+            }
         });
 
         let v = self.v.get_or_insert_with(|| {
             let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("adam_v"),
                 size: (elements * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            GpuTensor { buffer, shape: param.shape }
+            GpuTensor {
+                buffer,
+                shape: param.shape,
+            }
         });
 
         let beta1 = 0.9f32;
@@ -1119,11 +1129,13 @@ impl GpuAdam {
         let c2 = 1.0 / (1.0 - beta2.powi(self.iter));
 
         let uniforms = [lr, c1, c2, 0.0f32];
-        let uniform_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("adam_uniforms"),
-            contents: bytemuck::cast_slice(&uniforms),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform_buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("adam_uniforms"),
+                contents: bytemuck::cast_slice(&uniforms),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let bind_group_layout = gpu.adam_pipeline.get_bind_group_layout(0);
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1153,7 +1165,9 @@ impl GpuAdam {
             ],
         });
 
-        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&gpu.adam_pipeline);
@@ -2233,29 +2247,44 @@ mod tests {
     fn test_gpu_adam() {
         use crate::optimizer::{Adam, Optimizer};
         let gpu = Gpu::new();
-        
+
         let mut param_cpu = Array2::random((10, 10), StandardNormal).into_dyn();
-        let mut param_gpu = gpu.upload(&param_cpu.clone().into_dimensionality::<ndarray::Ix2>().unwrap());
-        
+        let mut param_gpu = gpu.upload(
+            &param_cpu
+                .clone()
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap(),
+        );
+
         let mut adam_cpu = Adam::new(0.01);
         let mut adam_gpu = GpuAdam::new();
-        
+
         for i in 0..3 {
             let grad_cpu = Array2::random((10, 10), StandardNormal).into_dyn();
-            let grad_gpu = gpu.upload(&grad_cpu.clone().into_dimensionality::<ndarray::Ix2>().unwrap());
-            
+            let grad_gpu = gpu.upload(
+                &grad_cpu
+                    .clone()
+                    .into_dimensionality::<ndarray::Ix2>()
+                    .unwrap(),
+            );
+
             adam_cpu.update(&mut param_cpu.view_mut(), &grad_cpu.view());
             adam_gpu.update(&gpu, &mut param_gpu, &grad_gpu, 0.01);
-            
+
             let downloaded = gpu.download(&param_gpu);
-            
+
             let max_diff = param_cpu
                 .iter()
                 .zip(downloaded.iter())
                 .map(|(c, g)| (c - g).abs())
                 .fold(0.0f32, f32::max);
 
-            assert!(max_diff < 1e-6, "Adam mismatch at step {}: diff={:e}", i, max_diff);
+            assert!(
+                max_diff < 1e-6,
+                "Adam mismatch at step {}: diff={:e}",
+                i,
+                max_diff
+            );
         }
     }
 }

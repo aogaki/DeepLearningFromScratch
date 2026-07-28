@@ -599,10 +599,10 @@ pub fn dropout(x: &Variable, dropout_ratio: f32) -> Variable {
 pub fn dropout_with_rng(
     x: &Variable,
     dropout_ratio: f32,
-    rng: &mut impl rand::RngCore,
+    rng: &mut impl rand::Rng,
 ) -> Variable {
     if crate::config::Config::train_mode() {
-        use ndarray_rand::rand_distr::{Distribution, Uniform};
+        use rand_distr::{Distribution, Uniform};
         let dist = Uniform::new(0.0, 1.0).unwrap();
         let scale = 1.0 / (1.0 - dropout_ratio);
 

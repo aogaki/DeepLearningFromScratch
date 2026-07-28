@@ -116,7 +116,7 @@ pub struct SinCurveDataset {
 
 impl SinCurveDataset {
     pub fn new(train: bool) -> Self {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         let num_data = 1000;
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 

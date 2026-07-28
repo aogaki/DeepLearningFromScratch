@@ -1,6 +1,6 @@
 use crate::variable::Variable;
-use ndarray_rand::RandomExt;
-use ndarray_rand::rand_distr::Normal;
+use crate::utils::random_array;
+use rand_distr::Normal;
 use std::cell::RefCell;
 
 /// パラメータであることを明示するためのエイリアス(ドキュメント用)
@@ -98,7 +98,7 @@ impl Linear {
     pub fn new(in_size: usize, out_size: usize, nobias: bool, rng: &mut impl rand::Rng) -> Self {
         // Xavierの初期値に近いスケール(1 / sqrt(in_size))
         let std_dev = 1.0 / (in_size as f32).sqrt();
-        let w_data = ndarray::Array::random_using(
+        let w_data = random_array(
             (in_size, out_size),
             Normal::new(0.0, std_dev).unwrap(),
             rng,
@@ -261,9 +261,9 @@ impl Conv2d {
     ) -> Self {
         // VGG16/He/Xavier scale. For consistency with DeZero, we use 1/sqrt(in_channels)
         let std_dev = 1.0 / (in_channels as f32).sqrt();
-        let w_data = ndarray::Array::random_using(
+        let w_data = random_array(
             (out_channels, in_channels, kernel_size.0, kernel_size.1),
-            ndarray_rand::rand_distr::Normal::new(0.0, std_dev).unwrap(),
+            Normal::new(0.0, std_dev).unwrap(),
             rng,
         )
         .into_dyn();

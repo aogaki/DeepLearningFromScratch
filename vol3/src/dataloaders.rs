@@ -10,11 +10,11 @@ pub struct DataLoader<D: Dataset> {
     batch_size: usize,
     shuffle: bool,
     indices: Vec<usize>,
-    rng: Box<dyn rand::RngCore>,
+    rng: Box<dyn rand::Rng>,
 }
 
 impl<D: Dataset> DataLoader<D> {
-    pub fn new(dataset: D, batch_size: usize, shuffle: bool, rng: Box<dyn rand::RngCore>) -> Self {
+    pub fn new(dataset: D, batch_size: usize, shuffle: bool, rng: Box<dyn rand::Rng>) -> Self {
         let len = dataset.len();
         let indices = (0..len).collect();
         Self {

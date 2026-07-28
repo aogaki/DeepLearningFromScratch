@@ -28,6 +28,20 @@ where
     Variable::new(diff_data)
 }
 
+/// ndarray-rand の `Array::random_using` 相当。
+/// rand 0.10 系に対応した ndarray-rand が存在しないため自前実装。
+pub fn random_array<Sh, D>(
+    shape: Sh,
+    dist: impl rand_distr::Distribution<f32>,
+    rng: &mut impl rand::Rng,
+) -> ndarray::Array<f32, D>
+where
+    Sh: ndarray::ShapeBuilder<Dim = D>,
+    D: ndarray::Dimension,
+{
+    ndarray::Array::from_shape_simple_fn(shape, || dist.sample(rng))
+}
+
 // 形の一致 + 全要素の絶対誤差で比較(浮動小数に == は使わない)
 pub fn approx_equal_arrayd(a: &ArrayD<f32>, b: &ArrayD<f32>, tol: f32) -> bool {
     if a.shape() != b.shape() {
@@ -128,7 +142,7 @@ pub fn sum_to(x: &ndarray::ArrayD<f32>, target_shape: &[usize]) -> ndarray::Arra
 /// 本 ステップ48: スパイラルデータセットの生成
 /// train: 訓練用かテスト用かでシードを切り替える (本家 DeZero に準拠して 1984 / 2020)
 pub fn get_spiral(train: bool) -> (ndarray::ArrayD<f32>, Vec<usize>) {
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     let seed = if train { 1984 } else { 2020 };

@@ -1,8 +1,7 @@
 use crate::bandit::{update_q, update_q_step};
 use crate::dp::Policy;
 use crate::grid_world::Action;
-use rand::distr::Distribution;
-use rand::distr::weighted::WeightedIndex;
+use crate::utils::{greedy_probs, sample_action};
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use std::collections::HashMap;
@@ -61,34 +60,6 @@ impl RandomAgent {
     }
 }
 
-/// ε-greedy 方策の確率分布を計算する関数
-fn greedy_probs(
-    q_s: &HashMap<Action, f32>, // ある状態 s における各行動のQ値
-    epsilon: f32,
-) -> HashMap<Action, f32> {
-    let actions = Action::all();
-    let action_size = actions.len() as f32;
-    let base_prob = epsilon / action_size; // 探索としてランダムに選ばれる確率
-    // Q値が最大の行動を探す（1章や4章と同じ max_by + partial_cmp）
-    let best_action = *actions
-        .iter()
-        .max_by(|&&a1, &&a2| {
-            let q1 = q_s.get(&a1).unwrap_or(&0.0);
-            let q2 = q_s.get(&a2).unwrap_or(&0.0);
-            q1.partial_cmp(q2).unwrap()
-        })
-        .unwrap();
-    let mut probs = HashMap::new();
-    for &action in &actions {
-        let prob = if action == best_action {
-            1.0 - epsilon + base_prob // 活用(1-ε) ＋ 探索の割り当て
-        } else {
-            base_prob // 探索の割り当てのみ
-        };
-        probs.insert(action, prob);
-    }
-    probs
-}
 pub struct McAgent {
     gamma: f32,
     epsilon: f32,
@@ -110,28 +81,19 @@ impl McAgent {
             pi: HashMap::new(),
         }
     }
-    pub fn get_action(&self, state: (usize, usize), rng: &mut StdRng) -> Action {
-        let actions = Action::all();
 
-        // 確率分布の取得（未知の状態なら均等確率）
-        let action_probs = if let Some(probs) = self.pi.get(&state) {
-            actions
-                .iter()
-                .map(|a| *probs.get(a).unwrap_or(&0.0))
-                .collect::<Vec<f32>>()
-        } else {
-            vec![1.0 / actions.len() as f32; actions.len()]
-        };
-        // 確率の重み付けに従ってランダム選択
-        let dist = WeightedIndex::new(&action_probs).unwrap();
-        actions[dist.sample(rng)]
+    pub fn get_action(&self, state: (usize, usize), rng: &mut StdRng) -> Action {
+        sample_action(&self.pi, state, rng)
     }
+
     pub fn add(&mut self, state: (usize, usize), action: Action, reward: f32) {
         self.memory.push((state, action, reward));
     }
+
     pub fn reset(&mut self) {
         self.memory.clear();
     }
+
     pub fn eval(&mut self) {
         let mut g = 0.0;
 

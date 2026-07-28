@@ -1,6 +1,6 @@
 use ndarray::ArrayD;
-use ndarray_rand::RandomExt;
-use ndarray_rand::rand_distr::Uniform;
+use vol3::utils::random_array;
+use rand_distr::Uniform;
 use rand::SeedableRng;
 use vol3::cnn::Col2Im;
 use vol3::function::Function;
@@ -11,7 +11,7 @@ use vol3::variable::Variable;
 fn test_im2col_col2im_duality() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let x_val =
-        ndarray::Array::random_using((1, 1, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
+        random_array((1, 1, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
             .into_dyn();
     let x = Variable::new(x_val);
 
@@ -56,13 +56,13 @@ where
 fn test_conv2d_simple_gradient_check() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let x_val =
-        ndarray::Array::random_using((1, 2, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
+        random_array((1, 2, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
             .into_dyn();
     let w_val =
-        ndarray::Array::random_using((3, 2, 2, 2), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
+        random_array((3, 2, 2, 2), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
             .into_dyn();
     let b_val =
-        ndarray::Array::random_using((3,), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
+        random_array((3,), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
 
     let x = Variable::new(x_val.clone());
     let w = Variable::new(w_val.clone());
@@ -94,7 +94,7 @@ fn test_conv2d_simple_gradient_check() {
 fn test_pooling_simple_gradient_check() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let x_val =
-        ndarray::Array::random_using((1, 2, 5, 5), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
+        random_array((1, 2, 5, 5), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
             .into_dyn();
     let x = Variable::new(x_val);
 
@@ -115,7 +115,7 @@ fn test_pooling_simple_gradient_check() {
 #[test]
 fn test_max_gradient_check() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let x_val = ndarray::Array::random_using((2, 3, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
+    let x_val = random_array((2, 3, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
         .into_dyn();
     let x = Variable::new(x_val);
 

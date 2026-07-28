@@ -161,7 +161,7 @@ mod tests {
         let loss = net.loss(x.view(), t.view());
         assert!(loss >= 0.0 && loss.is_finite());
         println!("loss test result: {}", loss);
-        assert!((loss - 2.302585).abs() < 1e-1);
+        assert!((loss - 2.302).abs() < 1e-1);
     }
 
     #[test]

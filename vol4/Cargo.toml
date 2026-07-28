@@ -7,3 +7,4 @@ edition = "2024"
 rand = "0.10"
 rand_distr = "0.6"
 ndarray = "0.17"
+vol3 = { path = "../vol3" }

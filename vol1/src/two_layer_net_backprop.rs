@@ -65,7 +65,11 @@ impl TwoLayerNetBackprop {
     pub fn predict(&mut self, x: Array2<f32>, train_flag: bool) -> Array2<f32> {
         let out1 = self.affine1.forward(x);
         let out2 = self.bn.forward(out1);
-        let out3 = self.relu.forward(out2.into_dyn()).into_dimensionality().unwrap();
+        let out3 = self
+            .relu
+            .forward(out2.into_dyn())
+            .into_dimensionality()
+            .unwrap();
         let out4 = self.dropout.forward(out3, train_flag);
         self.affine2.forward(out4)
     }
@@ -94,7 +98,11 @@ impl TwoLayerNetBackprop {
         let dout = self.last_layer.backward(1.0);
         let dout = self.affine2.backward(dout);
         let dout = self.dropout.backward(dout);
-        let dout = self.relu.backward(dout.into_dyn()).into_dimensionality().unwrap();
+        let dout = self
+            .relu
+            .backward(dout.into_dyn())
+            .into_dimensionality()
+            .unwrap();
         let dout = self.bn.backward(dout);
         let _dout = self.affine1.backward(dout);
 
@@ -180,13 +188,17 @@ impl TwoLayerNetBackprop {
     /// lr 等の更新則の詳細は Optimizer の内部事情になったため引数から消えた
     pub fn update(&mut self) {
         let (w, dw) = self.affine1.w_and_dw();
-        self.opt_w1.update(&mut w.view_mut().into_dyn(), &dw.view().into_dyn());
+        self.opt_w1
+            .update(&mut w.view_mut().into_dyn(), &dw.view().into_dyn());
         let (b, db) = self.affine1.b_and_db();
-        self.opt_b1.update(&mut b.view_mut().into_dyn(), &db.view().into_dyn());
+        self.opt_b1
+            .update(&mut b.view_mut().into_dyn(), &db.view().into_dyn());
         let (w, dw) = self.affine2.w_and_dw();
-        self.opt_w2.update(&mut w.view_mut().into_dyn(), &dw.view().into_dyn());
+        self.opt_w2
+            .update(&mut w.view_mut().into_dyn(), &dw.view().into_dyn());
         let (b, db) = self.affine2.b_and_db();
-        self.opt_b2.update(&mut b.view_mut().into_dyn(), &db.view().into_dyn());
+        self.opt_b2
+            .update(&mut b.view_mut().into_dyn(), &db.view().into_dyn());
     }
 
     /// 本 6.4.1 の過学習実験用に ch4 TwoLayerNet から移植。行ごとの argmax を突き合わせる。
@@ -504,7 +516,7 @@ mod tests {
             println!(
                 "lr={lr:.6}, λ={lambda:.8}, dropout_ratio={dropout_ratio:.2}, final val_acc = {val_acc:.4}"
             );
-        
+
             (lr, lambda, dropout_ratio, val_acc) // タプルで返して collect
         }).collect();
 

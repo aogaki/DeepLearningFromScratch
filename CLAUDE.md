@@ -162,6 +162,30 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   20 歩以内ゴール・reward approx_eq 1.0。debug 3.4s で #[ignore] 不要。教訓: 非選択行動の
   Q も隠れ層共有で更新後微動(出力層の勾配は厳密 0 — ch8 target network への伏線)。
   rustc の unused_assignments は入れ子 for 内の dead store を見逃す(最小再現で確認)。
-  次: 8章 DQN — 最初の議題は CartPole 環境の用意(Gym は本の学習対象外なので、
-  物理の移植は「一度きりの下準備」として Claude が書く選択肢あり)。
+  8章 下準備(2026-07-28): CartPole 環境を Claude が移植(cart_pole.rs — 本は Gym を
+  import するだけで実装は学習対象外のため「一度きりの下準備」扱い)。gymnasium 1.3.0 の
+  cartpole.py に忠実(陽的 Euler、f32、RNG 引数渡し、v0=200 步上限、CartPoleAction は
+  Action と同じ to_usize/from_usize/all 構成)。検証は golden 軌道 2 本
+  (tools/gen_cartpole_golden.py が本家 gymnasium を実走して生成 — 物理 10 步+
+  角度境界 18 步「閾値 0.2094 を 0.2029 でかすめて非終了→反対側で終了」、tol 1e-4)
+  +位置終了両側・上限/reset カウンタ・reset 範囲の計 6 テスト。
+  方針決定(2026-07-28): 8.3「DQN と Atari」(Pong)は読章扱い — 本自体がコード非提供
+  (p.252 に明言)、実装には ALE+GPU 丸1日が必要。Pong はフレームワーク昇格+wgpu v2
+  後の実戦検証候補として棚上げ。ε 線形減衰・報酬クリッピング(8.3.4)は環境非依存なので
+  CartPole 上で味見できる拡張。
+  8.2 DQN 完了(2026-07-28): ReplayBuffer<T>(VecDeque+満杯時 pop_front=deque(maxlen)、
+  rand::seq::index::sample=random.sample、underfill は assert — should_panic(expected)は
+  「パニック 1 呼び出しへ最小化」を教訓化)。DQNAgent(q_net/target_q_net、sync_qnet は
+  params() zip+set_data コピーで deepcopy 相当 — 長さ assert 付き、update はバッチ gather+
+  target 網 .data() 切断+(1-done) マスク、Adam lr=0.0005)。テスト: 同期一致・構造不一致
+  panic・update 隔離(全層スナップショット: q_net は変化 assert_ne/target は全層不変 assert_eq)。
+  8.2.5 は multi-seed 実験に発展(seed 引数のヘルパー+10 シード): 初回は隠れ 100×1 で
+  成功 3/5+0/5 → **本家 QNet は隠れ 2 層×128**(p.245 実査で発見)へ修正後、
+  **10/10 が訓練中に満点 200 到達**、greedy ≥150 は 7/10(過半数 6/10 を assert)。
+  greedy 終盤劣化 3 シードは Q 過大評価の方策振動 — 8.4 Double DQN の before/after 素材として温存。
+  教訓: 単一シードの DQN 曲線は「渋いが正常/微妙に壊れてる」を判定不能 — seed sweep
+  (0.2〜3.6 s/本)+対照群で切り分ける。容量不足はシード運と紛らわしい。
+  README を全面更新(vol4 の進捗表・構成ツリー・対応表・コマンド、2026-07-28)。
+  次: 8.4 読章(Double DQN の CartPole 実験は選択肢)→ 9章 方策勾配法。
+  備考: clippy 更新で vol1 に後方警告 47 件が出現(vol3/vol4 は 0 — 別途扱い)。
 - vol2・vol5・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

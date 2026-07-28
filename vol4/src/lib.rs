@@ -1,5 +1,7 @@
 pub mod bandit;
+pub mod cart_pole;
 pub mod dp;
+pub mod dqn;
 pub mod grid_world;
 pub mod mc;
 pub mod qlearn_nn;

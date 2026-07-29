@@ -23,7 +23,7 @@ Claude Code をガイド兼レビュアーとして一歩ずつ進めている�
 | vol2 | 未着手    | (個人的興味の巻として後回し)                                                        |
 | vol3 | **本編完走** | **第3ステージ(〜ステップ36)完了**: `Variable`(`Rc<RefCell>` の薄いハンドル — Python の共有参照を Rust で明示)/ Function を `Forward`・`Function`・`Creator` の 3 trait に分割し、`call(self)` が関数を `Node<F>` としてグラフへ移す(「入力未設定」状態が型で排除される設計)/ 数値微分(f32 では eps ≈ ∛ε ≈ 5e-3 と導出)/ 自動逆伝播(ループ+世代管理のトポロジカル順+勾配累積)/ `no_grad`(thread_local + RAII ガード)/ 演算子オーバーロード(`std::ops` 4通り+スカラー混合をマクロ量産、`3.0 * &x` が `__rmul__` なしで書ける)/ Graphviz 可視化 / **高階微分(double backprop)** — grad を Variable にして backward 自体がグラフを作る(create_graph+no_grad ガード、Rc 循環リークは Weak テストで実証)。Goldstein-Price の勾配が本と厳密一致。**第4ステージ(37〜51)完了**: テンソル対応(reshape/transpose・broadcast_to/sum_to の双対ペア、勾配形状の不変条件 grad.shape == data.shape を debug_assert で確立)・行列積・線形回帰(loss がノイズ分散 1/12 の理論下限に到達)・**Layer trait**(params は名前なしホットパス/named_params は "l1/W" 階層名に分離)で Linear・TwoLayerNet・MLP — 同一の決定的軌道を step43〜46 の5実装がテストで相互に担保・Optimizer(SGD/MomentumSGD、`params()` の Rc ハンドルで所有権問題が消滅)・softmax 交差エントロピー(Gather/GatherGrad 双対+二階微分テスト、閉形式 (p−t)/N で検証)・spiral 分類 97%・**Dataset/DataLoader**(`IntoIterator for &mut` で1エポック=1 for ループ)・**MNIST**(IDX パーサ再実装・u8 保持+transform・ReLU)を MLP 5エポック **17秒** で test **97.7%** / **第5ステージ(52〜60)完了**: save/load(`ndarray-npy` の npz・2パス atomic load・**Rust→Python np.load のパリティ橋**)・Dropout(合成スタイル+`test_mode` RAII ガード)・CNN(im2col/col2im の双対・conv2d_simple/pooling_simple — gradient check では掴めない転置ずれを値テストで捕捉した教訓付き)・**VGG16(16層 forward が Python DeZero と 1e-4 で一致 — パリティ検証の初実戦、release 1.8s)**・RNN/LSTM(truncated BPTT を所有権 DAG の一点切断で実装、「ピンはレイヤの h と累積 loss の2本」の教訓、Adam)・SeqDataLoader+Dataset 関連型 Target。LSTM の cos 自己回帰 MSE **0.40**(SimpleRNN 1.5 超)を assert、100 epoch release 約1秒。52(GPU/CuPy)は設計読書のみ(GPU 化はロードマップ後段の wgpu v2)。**本編60ステップ完走(2026-07-25)** |
 | vol4 | **本編完走** | 1章 バンディット(ε-greedy・非定常環境、ペアドシード比較で本の結論を assert)/ 2〜3章 読章 / 4章 動的計画法(GridWorld・policy/value iteration — 図4-13 パリティ・γ べき手計算・アルゴリズム間クロスチェックの三段検証)/ 5章 モンテカルロ法(MC↔DP クロスチェック 1万エピソード、重点サンプリングは b を π に近づけて分散 1/4 を実測)/ 6章 TD 法(SARSA・方策オフ SARSA・Q 学習 — 重点サンプリングの ρ=0 破壊的更新を α=0.1 で手当てする教訓込み)— ここまで素の Rust。**7章から vol3 フレームワークを path 依存で使用**(計画済みの最終判断を採択)/ 7章 ニューラルネットワークと Q 学習(GridWorld の one-hot 化・`gather` で q[:,a] 抽出・1000 エピソード学習後の greedy ロールアウトがゴール到達を assert)/ 8章 DQN: **CartPole-v0 環境を自作**し、本家 gymnasium 1.3.0 を実走した golden 軌道と 1e-4 で一致を assert(環境の転記ミスは自己一致テストでは検出不能のため)。ReplayBuffer+ターゲットネットワーク+Adam(QNet 4→128→128→2)で **10 シード全てが訓練中に満点 200 到達**、学習後の greedy 評価 ≥150 が 7/10(過半数成功を assert — 終盤の方策振動は DQN 本来の病理で 8.4 の伏線)/ 8.4 **Double DQN を式から実装**(本はコード非提供): 成績は 7/10 対 7/10 で差なし(行動 2 つの CartPole では感度不足 — 理論どおりの null)だが、**過大評価バイアスそのものを Q(s₀) で直接測定し Normal 14.4 > Double 13.5(9/10 シード、差 ≈4σ)を検出** — 機構レベルで効果を実証。8.3(Atari/Pong)は読章(本もコード非提供、wgpu GPU 化後の実戦候補)/ 9章 方策勾配法: simple PG(9.1)→ REINFORCE(9.2)→ **Actor-Critic**(9.4)を同一検証枠組みで三段比較 — 3000 エピソードの last-100 平均 **88 → 189 → 198**、プラトー到達 1400 → 700 エピソード。方策は Policy クラスを作らず MLP+softmax(サンプリングは共通部品 `sample_action_from_logits`)。π(a|s) の Variable を**グラフ付きで運ぶ**設計(DQN の切断習慣と真逆)を隔離テストで担保し、Actor-Critic の切断 2 点(V ターゲットと δ)は f32 境界で計算して本家 `unchain()` を「忘れられない」形に翻訳 / 10章(A3C・DDPG・TRPO・Rainbow 概説)は読章 — **本編完走(2026-07-29)** |
-| vol5 | **進行中** | 生成モデル編(2026-07-29 開始)。vol4 パターンを踏襲し、前半(ステップ 1〜5: 統計・GMM・EM)は素の Rust、ステップ 6(NN/VAE 境界)入り口でクレート昇格を判断。ステップ 1〜3 完了: 正規分布・最尤推定・多変量正規分布(det/inv は BLAS に頼らず自作 — 部分ピボット付きガウス消去・ガウス・ジョルダン) |
+| vol5 | **進行中(前半完走)** | 生成モデル編(2026-07-29 開始)。vol4 パターンを踏襲し、前半(ステップ 1〜5)は素の Rust、ステップ 6(NN/VAE 境界)入り口でクレート昇格を判断。**前半完走(2026-07-29)**: ステップ 1〜3 正規分布・最尤推定・多変量正規(det/inv は BLAS に頼らず自作)/ ステップ 4 GMM(Cholesky も自作し `np.random.multivariate_normal` の中身まで写経、標本共分散 1 万点の統計 assert)/ ステップ 5 EM(**Old Faithful 実データの収束先が文献の正典値 (2.04, 54.5)・(4.29, 80.0) と一致**、対数尤度の単調性定理を誤差付き assert に翻訳。**f32 アンダーフロー事件**: 本の f64 前提の初期値が f32 では負担率崩壊 → スケール調整で回避) |
 | vol6 | 未着手    | —                                                                                      |
 
 ## ロードマップ
@@ -106,9 +106,10 @@ Claude Code をガイド兼レビュアーとして一歩ずつ進めている�
 │       └── gen_cartpole_golden.py # CartPole パリティ golden の一度きり生成
 ├── vol5/            # 5巻目(生成モデル編)のクレート — ステップ 1〜5 は素の Rust
 │   ├── src/
-│   │   ├── gaussian.rs   # ステップ1〜3 正規分布・最尤推定・多変量正規(det/inv 自作)
-│   │   └── utils.rs      # approx_eq・random_normal_array(RNG 注入)
-│   └── tests/            # ステップ単位の実験+assert(step1_3.rs〜)
+│   │   ├── gaussian.rs   # ステップ1〜4 正規分布・GMM(det/inv/Cholesky 自作・サンプリング)
+│   │   ├── em.rs         # ステップ5 EM アルゴリズム(GaussianMixtureModel)
+│   │   └── utils.rs      # approx_eq・random_normal_array(RNG 注入)・load_txt
+│   └── tests/            # ステップ単位の実験+assert(step01_03.rs〜)
 ├── books/           # 本の PDF(gitignore 済み)
 └── Cargo.toml       # ワークスペース定義
 ```
@@ -205,8 +206,10 @@ Python 版との主な設計差(Rust の所有権に合わせた意図的なも�
 
 | 本のステップ                   | ファイル                          |
 | ------------------------------ | --------------------------------- |
-| ステップ 1〜3 正規分布・最尤推定・多変量正規分布 | `vol5/src/gaussian.rs`(det/inv の自作線形代数含む)、`utils.rs`(実験: `tests/step1_3.rs`) |
-| ステップ 4〜(GMM・EM・NN・VAE・拡散) | 進行中                        |
+| ステップ 1〜3 正規分布・最尤推定・多変量正規分布 | `vol5/src/gaussian.rs`(det/inv の自作線形代数含む)、`utils.rs`(実験: `tests/step01_03.rs`) |
+| ステップ 4 混合ガウスモデル | `vol5/src/gaussian.rs`(`gmm`・`cholesky`・`sample_gmm`。実験: `tests/step04.rs`) |
+| ステップ 5 EM アルゴリズム | `vol5/src/em.rs`(実験: `tests/step05.rs` — Old Faithful 実データ、`vol5/dataset/` に取得済み) |
+| ステップ 6〜10(NN・VAE・拡散モデル) | 未着手 — ここからフレームワーク(PyTorch 相当)区間 |
 
 ### 第6巻 ― LLM編(`vol6`)
 

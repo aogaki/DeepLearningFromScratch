@@ -1,4 +1,7 @@
 use ndarray::{Array1, Array2};
+use rand::Rng;
+use rand_distr::Distribution;
+use rand_distr::weighted::WeightedIndex;
 use std::f32::consts::PI;
 
 /// Step 1: 1次元の正規分布の確率密度関数 (スカラー版)
@@ -34,6 +37,20 @@ pub fn multivariate_normal(x: &Array1<f32>, mu: &Array1<f32>, cov: &Array2<f32>)
     let denom = ((2.0 * PI).powf(d) * det).sqrt();
 
     exponent.exp() / denom
+}
+
+/// Step 4: 混合ガウスモデル (GMM) の確率密度関数
+/// x: 評価する点 (D次元)
+/// pis: 各ガウス分布の重み (K次元)
+/// mus: 各ガウス分布の平均ベクトル (K個のD次元ベクトル)
+/// covs: 各ガウス分布の共分散行列 (K個のD x D行列)
+pub fn gmm(x: &Array1<f32>, pis: &[f32], mus: &[Array1<f32>], covs: &[Array2<f32>]) -> f32 {
+    // インデックスループを排除し、イテレータチェーンで重み付き和を計算
+    pis.iter()
+        .zip(mus)
+        .zip(covs)
+        .map(|((&pi, mu), cov)| pi * multivariate_normal(x, mu, cov))
+        .sum()
 }
 
 // --- 以下、ゼロから作る行列計算 (Pure Rust) ---
@@ -153,6 +170,63 @@ pub fn invert_matrix(matrix: &Array2<f32>) -> Option<Array2<f32>> {
     Some(inv)
 }
 
+// --- ゼロから作るサンプリング処理 ---
+/// コレスキー分解 (A = L * L^T を満たす下三角行列 L を求める)
+pub fn cholesky(matrix: &Array2<f32>) -> Option<Array2<f32>> {
+    let n = matrix.nrows();
+    if n != matrix.ncols() {
+        return None;
+    }
+
+    let mut l = Array2::<f32>::zeros((n, n));
+
+    for i in 0..n {
+        for j in 0..=i {
+            let mut sum = 0.0;
+            for k in 0..j {
+                sum += l[[i, k]] * l[[j, k]];
+            }
+
+            if i == j {
+                let val = matrix[[i, i]] - sum;
+                if val <= 0.0 {
+                    return None;
+                } // 正定値でない場合
+                l[[i, j]] = val.sqrt();
+            } else {
+                l[[i, j]] = (matrix[[i, j]] - sum) / l[[j, j]];
+            }
+        }
+    }
+    Some(l)
+}
+
+/// 多次元正規分布からのサンプリング (コレスキー分解を利用: x = μ + L * z)
+pub fn sample_multivariate_normal<R: Rng>(
+    mu: &Array1<f32>,
+    cov: &Array2<f32>,
+    rng: &mut R,
+) -> Option<Array1<f32>> {
+    let n = mu.len();
+    let l = cholesky(cov)?;
+
+    let z = crate::utils::random_normal_array(n, 0.0, 1.0, rng);
+
+    Some(mu + l.dot(&z))
+}
+
+/// 混合ガウスモデル (GMM) からのトイデータのサンプリング
+pub fn sample_gmm<R: Rng>(
+    pis: &[f32],
+    mus: &[Array1<f32>],
+    covs: &[Array2<f32>],
+    rng: &mut R,
+) -> Option<Array1<f32>> {
+    let dist = WeightedIndex::new(pis).ok()?;
+    let k = dist.sample(rng);
+    sample_multivariate_normal(&mus[k], &covs[k], rng)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::utils::approx_eq;
@@ -226,5 +300,32 @@ mod tests {
         // 0.0 であり、逆行列は None となることをテスト
         assert!(approx_eq(determinant(&m), 0.0, 1e-5));
         assert!(invert_matrix(&m).is_none());
+    }
+
+    #[test]
+    fn test_cholesky() {
+        // 1. 手計算できる 2x2 行列
+        // A = [[4, 2], [2, 3]]
+        // L_00 = sqrt(4) = 2
+        // L_10 = 2 / 2 = 1
+        // L_11 = sqrt(3 - 1^2) = sqrt(2) ≈ 1.4142135
+        let a = array![[4.0f32, 2.0f32], [2.0f32, 3.0f32]];
+        let l = cholesky(&a).unwrap();
+
+        // 要素が手計算と一致するか
+        assert!(approx_eq(l[[0, 0]], 2.0, 1e-5));
+        assert!(approx_eq(l[[0, 1]], 0.0, 1e-5));
+        assert!(approx_eq(l[[1, 0]], 1.0, 1e-5));
+        assert!(approx_eq(l[[1, 1]], 2.0f32.sqrt(), 1e-5));
+        // L * L^T ≈ A の往復テスト
+        let a_reconstructed = l.dot(&l.t());
+        for i in 0..2 {
+            for j in 0..2 {
+                assert!(approx_eq(a[[i, j]], a_reconstructed[[i, j]], 1e-5));
+            }
+        }
+        // 2. 非正定値行列 (行列式 det = 1*1 - 2*2 = -3 < 0) は None が返るべき
+        let not_pd = array![[1.0f32, 2.0f32], [2.0f32, 1.0f32]];
+        assert!(cholesky(&not_pd).is_none());
     }
 }

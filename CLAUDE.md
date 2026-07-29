@@ -216,7 +216,7 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   Rust で先行し、クレート昇格の判断はステップ 6(NN/VAE 境界)入り口に繰り延べ。
   備考: clippy 更新で vol1 に後方警告 47 件が出現(vol3/vol4 は 0 — 別途扱い)。
 - **vol5: 進行中(2026-07-29 開始)**。生成モデル編・全 10 ステップ(正規分布→最尤推定→
-  多変量正規→GMM→EM→NN→VAE→階層型VAE→拡散→条件付き拡散)。**本の Python は DeZero
+  多変量正規→GMM→EM→NN→VAE→拡散理論→拡散実装→拡散応用)。**本の Python は DeZero
   でなく PyTorch 2.x** — ステップ 6 以降の移植は「PyTorch パリティ検証」の実地訓練を兼ねる。
   ステップ 1〜3 完了(2026-07-29): gaussian.rs(normal/normal_array/fit_normal/
   multivariate_normal+自作 determinant/invert_matrix — 部分ピボット付きガウス消去・
@@ -226,5 +226,21 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   vol3 合流準備)。検証の型: 線形代数は非対称 3×3 手計算値+ピボット交換強制+特異行列+
   A·A⁻¹≈I(単位行列だけでは消去が未踏になる — vol4 pooling 教訓の再演)、
   「図→統計量 assert」翻訳第 1 号として規格化条件のリーマン和 assert。
-  次: ステップ 4(混合ガウスモデル)→ 5(EM)— 研究(Oslo/SBI)に最も近い区間。
+  ステップ 4 完了(2026-07-29): gmm(イテレータ重み付き和)、Cholesky 自作(N×N・
+  非正定値 None — 本が呼ぶだけの np.random.multivariate_normal の中身を写経)、
+  sample_multivariate_normal(x=μ+Lz)+sample_gmm(祖先サンプリング)。検証:
+  Cholesky 手計算 2×2+L·Lᵀ 往復+非正定値、標本共分散(1万点・非対角込み)で
+  サンプリングの「形」を統計 assert(混合比率テストは成分選択しか見ない、の指摘から)、
+  GMM 密度手計算・2D リーマン和・混合比率は Φ で真値較正(0.41336)。
+  ステップ 5 完了(2026-07-29): em.rs(GaussianMixtureModel — e_step/m_step/
+  log_likelihood/fit。fit は LL 履歴 Vec を返しライブラリは黙る)、utils::load_txt 自作、
+  データは vol5/dataset/(old_faithful ほか 3 本、Claude が下準備で取得)。
+  **f32 アンダーフロー事件**: 本の単位行列初期値は f64 前提(exp(−200) が f32 で 0 →
+  負担率崩壊)→ y 分散 100 へスケール調整で回避(log-sum-exp は VAE で再会予定)。
+  検証: 1D トイの E/M 手計算、**定理 5.3.4(LL 単調非減少)を eps=1e-2 付き assert に翻訳**
+  (プラトーで f32 ノイズ −4e-4 を実測 — 厳密 ≥ は成立しない)、Old Faithful 収束先が
+  文献正典値 (2.04,54.5) w=.356 / (4.29,80.0) w=.644 と一致=外部パリティ。
+  **★ vol5 前半(素の Rust 区間)完走(2026-07-29)。**
+  次: 繰り延べていた分岐点に到着 — クレート昇格+v1.0 凍結(本番ツール化モード)を
+  ステップ 6(NN/VAE、PyTorch 写経)の前に挟むか、をユーザーが判断。
 - vol2・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

@@ -1,10 +1,13 @@
+//! 本 4章「動的計画法」— 反復方策評価・方策反復法・価値反復法。
+//! 検証(図4-13 パリティ・γ べき手計算表・アルゴリズム間クロスチェック)はモジュール内 tests と `tests/ch04.rs`。
+
 use crate::grid_world::{Action, GridWorld};
 use std::collections::HashMap;
 
 /// 方策の型エイリアス: 状態 → (行動 → 確率)
 pub type Policy = HashMap<(usize, usize), HashMap<Action, f32>>;
 
-/// ランダム方策（全状態で均等確率）
+/// 本 4.2.3「反復方策評価の実装」: ランダム方策(全状態で均等確率)。
 /// 型が変わった: 状態ごとの行動分布を返すようになった
 pub fn random_policy(env: &GridWorld) -> Policy {
     let prob = 1.0 / Action::all().len() as f32;
@@ -12,7 +15,7 @@ pub fn random_policy(env: &GridWorld) -> Policy {
     env.states().map(|s| (s, action_probs.clone())).collect()
 }
 
-/// 方策評価の1ステップ（インプレース更新）
+/// 本 4.2.3「反復方策評価の実装」: 方策評価の1ステップ(インプレース更新)。
 /// pi が状態ごとの分布を持つようになった
 pub fn eval_onestep(
     pi: &Policy,
@@ -36,7 +39,7 @@ pub fn eval_onestep(
     }
 }
 
-/// 方策評価（収束まで繰り返す）
+/// 本 4.2.3「反復方策評価の実装」: 方策評価(更新幅が threshold を切るまで繰り返す)。
 pub fn policy_eval(
     pi: &Policy,
     env: &GridWorld,
@@ -61,7 +64,8 @@ pub fn policy_eval(
     v
 }
 
-/// 状態 s における全行動の行動価値 q(s,a) = r + γV(s') を返す
+/// 本 4.4.1「方策の改善」: 状態 s における全行動の行動価値 q(s,a) = r + γV(s')。
+/// greedy_policy(argmax)と value_iter(max)の共有部品。
 pub fn action_values(
     state: (usize, usize),
     v: &HashMap<(usize, usize), f32>,
@@ -78,7 +82,7 @@ pub fn action_values(
         .collect()
 }
 
-/// greedy方策: V から各状態の argmax 行動を選び、確定方策を作る
+/// 本 4.4.1「方策の改善」: V から各状態の argmax 行動を選び、確定方策(greedy 方策)を作る。
 pub fn greedy_policy(v: &HashMap<(usize, usize), f32>, env: &GridWorld, gamma: f32) -> Policy {
     let mut pi = Policy::new();
 
@@ -106,7 +110,7 @@ pub fn greedy_policy(v: &HashMap<(usize, usize), f32>, env: &GridWorld, gamma: f
     pi
 }
 
-/// 方策反復法: 評価 ↔ 改善 を方策が変化しなくなるまで交互に回す
+/// 本 4.4.2「評価と改善を繰り返す」: 方策反復法 — 評価 ↔ 改善 を方策が変化しなくなるまで交互に回す。
 pub fn policy_iter(
     env: &GridWorld,
     gamma: f32,
@@ -124,7 +128,7 @@ pub fn policy_iter(
     }
 }
 
-/// 価値反復法: V(s) ← max_a [r + γV(s')] を収束まで繰り返す
+/// 本 4.5.2「価値反復法の実装」: V(s) ← max_a [r + γV(s')] を収束まで繰り返し、最後に方策を抽出。
 pub fn value_iter(
     env: &GridWorld,
     gamma: f32,

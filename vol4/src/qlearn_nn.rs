@@ -1,3 +1,6 @@
+//! 本 7.4「Q 学習とニューラルネットワーク」— GridWorld の Q 関数を vol3 の MLP で近似。
+//! vol3 フレームワークの初実戦投入(path 依存)。実験は `tests/ch07.rs`。
+
 use crate::grid_world::Action;
 use ndarray::Array;
 use rand::RngExt;
@@ -8,7 +11,7 @@ use vol3::layers::{Layer, MLP};
 use vol3::optimizers::{Optimizer, SGD};
 use vol3::variable::Variable;
 
-// 状態 (row, col) をNN入力用の one-hot ベクトル [1, size] に変換するヘルパー
+/// 本 7.4.1「ニューラルネットワークの前処理」: 状態 (y, x) を one-hot の [1, H·W] Variable に変換。
 pub fn one_hot(state: (usize, usize), width: usize, height: usize) -> Variable {
     let size = width * height;
     let mut vec = vec![0.0_f32; size];
@@ -18,6 +21,9 @@ pub fn one_hot(state: (usize, usize), width: usize, height: usize) -> Variable {
     Variable::new(Array::from_shape_vec((1, size), vec).unwrap().into_dyn())
 }
 
+/// 本 7.4.3「ニューラルネットワークと Q 学習」: NN 版 Q 学習エージェント。
+/// update は `qs.gather` で q[:, a] を切り出し(本家 p.228 の `qs[:, action]`)、
+/// next_q は `.data()` の f32 取り出し = 本家 `unchain()` 相当(勾配を流さない)。
 pub struct QLearningNNAgent {
     pub q_net: MLP,
     pub optimizer: SGD,

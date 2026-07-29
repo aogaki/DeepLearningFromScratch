@@ -1,5 +1,9 @@
+//! 本 4.2.1「GridWorld クラスの実装」— 3×4 グリッドワールド環境(4〜7章で使用)。
+//! 5.3.1「step メソッド」で reset/step(エージェントの体 = agent_state)を追加。
+
 use std::collections::{HashMap, HashSet};
 
+/// 本 4.2.1: 上下左右の行動。usize との相互変換は 7章(NN の出力インデックス対応)で追加。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     Up,
@@ -44,6 +48,8 @@ impl Action {
     }
 }
 
+/// 本 4.2.1「GridWorld クラスの実装」: 図4-9 の 3×4 グリッドワールド。
+/// 終端はゴールのみ(爆弾マスは通過可)、壁は states() から除外。
 pub struct GridWorld {
     height: usize,
     width: usize,
@@ -73,6 +79,7 @@ impl GridWorld {
         }
     }
 
+    /// 本 図4-9 と同じ 3×4 グリッド(ゴール (0,3)・爆弾 (1,3)・壁 (1,1)・スタート (2,0))。
     pub fn make_default() -> Self {
         // 本と同じ 3 x 4 のグリッドワールドを作る
         let height = 3;
@@ -136,11 +143,13 @@ impl GridWorld {
         *self.reward_map.get(&next_state).unwrap_or(&0.0)
     }
 
+    /// 本 5.3.1「step メソッド」: エージェントをスタート位置に戻す。
     pub fn reset(&mut self) -> (usize, usize) {
         self.agent_state = self.start_state;
         self.agent_state
     }
 
+    /// 本 5.3.1「step メソッド」: 1 ステップ進めて (次状態, 報酬, done) を返す。
     pub fn step(&mut self, action: Action) -> ((usize, usize), f32, bool) {
         let state = self.agent_state;
         let next_state = self.next_state(state, action);

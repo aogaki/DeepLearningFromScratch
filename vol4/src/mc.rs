@@ -1,3 +1,6 @@
+//! 本 5章「モンテカルロ法」— 方策評価(RandomAgent)と方策制御(McAgent)。
+//! 検証(MC↔DP クロスチェック・重点サンプリングの分散測定)は `tests/ch05.rs`。
+
 use crate::bandit::{update_q, update_q_step};
 use crate::dp::Policy;
 use crate::grid_world::Action;
@@ -6,6 +9,8 @@ use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 
+/// 本 5.3.2「エージェントクラスの実装」: ランダム方策の every-visit MC 方策評価。
+/// エピソードの記憶を逆順に畳んで G を計算し、1章の update_q(逐次平均)で V を更新する。
 pub struct RandomAgent {
     gamma: f32,
     // (状態, 行動, 報酬) の履歴
@@ -60,6 +65,8 @@ impl RandomAgent {
     }
 }
 
+/// 本 5.4.5「【修正版】モンテカルロ法を使った方策反復法の実装」: MC 方策制御。
+/// 2 つの修正込み — ε-greedy(5.4.3)+固定値 α 方式(5.4.4)。
 pub struct McAgent {
     gamma: f32,
     epsilon: f32,

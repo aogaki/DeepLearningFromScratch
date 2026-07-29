@@ -1,5 +1,9 @@
+//! 本 8.2「DQN のコア技術」— 経験再生(ReplayBuffer)とターゲットネットワーク(DQNAgent)。
+//! 8.4.1「Double DQN」拡張込み(本はコード非提供 — 式から実装)。
+//! 環境は `cart_pole`、学習実験と multi-seed 検証は `tests/ch08.rs`。
+
 use crate::cart_pole::CartPoleAction;
-use crate::utils::argmax_f32;
+use crate::utils::{argmax_f32, to_batch_var};
 use ndarray::Array2;
 use rand::RngExt;
 use rand::rngs::StdRng;
@@ -11,8 +15,11 @@ use vol3::layers::{Layer, MLP};
 use vol3::optimizers::{Adam, Optimizer};
 use vol3::variable::Variable;
 
+/// 本 8.2.1: 経験タプル (state, action, reward, next_state, done)。
 pub type Experience = ([f32; 4], CartPoleAction, f32, [f32; 4], bool);
 
+/// 本 8.2.2「経験再生の実装」: `deque(maxlen=buffer_size)` + `random.sample` の翻訳。
+/// 満杯時は最古(front)を捨て、get_batch は重複なしの一様サンプリング。
 pub struct ReplayBuffer<T> {
     buffer: VecDeque<T>,
     buffer_size: usize,
@@ -66,6 +73,9 @@ impl<T: Clone> ReplayBuffer<T> {
     }
 }
 
+/// 本 8.2.4「ターゲットネットワークの実装」: 訓練対象の q_net と、TD ターゲットを
+/// 固定するための target_q_net の 2 本立て。QNet(本 p.245 — 隠れ 2 層×128)は
+/// vol3 の MLP で表現し、層構成は呼び出し側が指定する。
 pub struct DQNAgent {
     pub q_net: MLP,
     pub target_q_net: MLP,
@@ -74,7 +84,9 @@ pub struct DQNAgent {
     pub epsilon: f32,
     pub action_size: usize,
     pub state_size: usize,
-    pub use_double_dqn: bool, // 追加
+    /// 本 8.4.1「Double DQN」: true にすると TD ターゲットの行動選択を online 網に
+    /// 切り替える(評価は target 網のまま — max の過大評価バイアスを抑える)。
+    pub use_double_dqn: bool,
 }
 impl DQNAgent {
     pub fn new(
@@ -110,7 +122,8 @@ impl DQNAgent {
         agent
     }
 
-    /// q_net の重みを target_q_net に丸写しする
+    /// 本 8.2.4(sync_qnet): q_net の重みを target_q_net に丸写しする
+    /// (本家の `copy.deepcopy` 相当。パラメータ数の一致を assert で確認)。
     pub fn sync_qnet(&mut self) {
         assert!(
             self.q_net.params().len() == self.target_q_net.params().len(),
@@ -123,18 +136,14 @@ impl DQNAgent {
             .for_each(|(src, dst)| dst.set_data(src.data()));
     }
 
+    /// 本 8.2.4(get_action): ε-greedy — 確率 ε でランダム、それ以外は q_net の argmax。
     pub fn get_action(&self, state: &[f32; 4], rng: &mut StdRng) -> CartPoleAction {
         let actions = CartPoleAction::all();
         if rng.random::<f32>() < self.epsilon {
             *actions.choose(rng).unwrap()
         } else {
             // CartPole の状態 [f32; 4] を [1, 4] の Variable に変換
-            let state_var = Variable::new(
-                Array2::from_shape_vec((1, self.state_size), state.to_vec())
-                    .unwrap()
-                    .into_dyn(),
-            );
-
+            let state_var = to_batch_var(state);
             let qs = self.q_net.forward(&state_var);
             let qs_data = qs.data().into_dimensionality::<ndarray::Ix2>().unwrap();
 
@@ -143,13 +152,10 @@ impl DQNAgent {
         }
     }
 
-    /// 特定の状態における最大のQ値を返す (過大評価の測定用)
+    /// 本 8.4.1 の実験用(本を超えた測定): 状態 s での max_a Q(s,a)。
+    /// 過大評価バイアスの直接観測(Normal vs Double の Q(s₀) 比較)に使う。
     pub fn max_q(&self, state: &[f32; 4]) -> f32 {
-        let state_var = Variable::new(
-            Array2::from_shape_vec((1, self.state_size), state.to_vec())
-                .unwrap()
-                .into_dyn(),
-        );
+        let state_var = to_batch_var(state);
         let qs = self.q_net.forward(&state_var);
         let qs_data = qs.data().into_dimensionality::<ndarray::Ix2>().unwrap();
         qs_data
@@ -159,7 +165,10 @@ impl DQNAgent {
             .fold(f32::NEG_INFINITY, f32::max)
     }
 
-    /// ReplayBuffer からサンプリングしたバッチで学習を行う
+    /// 本 8.2.4(update): ReplayBuffer からサンプリングしたバッチで学習を行う。
+    /// バッチ gather で q[:, a] を切り出し(図8-7)、ターゲット網側は `.data()` で
+    /// グラフを切断(本家 unchain 相当)、done は (1-done) マスクで処理。
+    /// use_double_dqn = true ならターゲット計算のみ 8.4.1 の分業方式に切り替わる。
     pub fn update(&mut self, batch: &[Experience]) {
         let batch_size = batch.len();
 

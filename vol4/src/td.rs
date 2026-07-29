@@ -1,3 +1,6 @@
+//! 本 6章「TD 法」— TD(0) 方策評価・SARSA・方策オフ SARSA・Q 学習。
+//! 検証(TD↔DP クロスチェック・3 手法の方策制御)は `tests/ch06.rs`。
+
 use crate::bandit::update_q_step;
 use crate::dp::Policy;
 use crate::grid_world::Action;
@@ -7,6 +10,8 @@ use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 
+/// 本 6.1.3「TD 法の実装」: TD(0) による方策評価。
+/// 固定方策 π のもとで V(S) ← V(S) + α(R + γV(S') − V(S)) を 1 ステップごとに回す。
 pub struct TdAgent {
     gamma: f32,
     alpha: f32,
@@ -52,6 +57,8 @@ impl TdAgent {
     }
 }
 
+/// 本 6.2.2「SARSA の実装」: 方策オン型 SARSA。
+/// 本家の deque(maxlen=2) は Option<1歩前> に翻訳(None ダミー呼び出しが構造ごと消滅)。
 pub struct SarsaAgent {
     gamma: f32,
     alpha: f32,
@@ -113,6 +120,9 @@ impl SarsaAgent {
     }
 }
 
+/// 本 6.3.2「方策オフ型の SARSA の実装」: 目標方策 π(greedy)と挙動方策 b(ε-greedy)の
+/// 2 本立て。TD ターゲットに重点サンプリングの重み ρ = π/b を掛ける。
+/// α は本家の 0.8 でなく小さめが必要(ρ=0 の破壊的更新 — 理由は `tests/ch06.rs` 参照)。
 pub struct OffPolicySarsaAgent {
     gamma: f32,
     alpha: f32,
@@ -188,6 +198,8 @@ impl OffPolicySarsaAgent {
     }
 }
 
+/// 本 6.4.3「Q 学習の実装」を 6.5.2「サンプルモデル版の Q 学習」の最終形で移植。
+/// 方策分布を実体化せず、ε-greedy を Q からその場で計算する(ch1 バンディットと同型)。
 pub struct QLearningAgent {
     gamma: f32,
     alpha: f32,

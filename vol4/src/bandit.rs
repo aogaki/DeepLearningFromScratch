@@ -1,8 +1,12 @@
+//! 本 1章「バンディット問題」— スロットマシンと ε-greedy エージェント。
+//! 実験(1.4.3〜1.4.4、1.5.2)は `tests/ch01.rs`。
+
 use crate::utils::argmax;
 use ndarray::Array1;
 use rand::{RngExt, rngs::StdRng};
 use rand_distr::{Distribution, Normal};
 
+/// 本 1.4.2「エージェントの実装」: 標本平均で Q を推定する ε-greedy エージェント。
 pub struct Agent {
     epsilon: f32,
     q: Array1<f32>,
@@ -31,6 +35,7 @@ impl Agent {
     }
 }
 
+/// 本 1.4.1「スロットマシンの実装」: 当たり確率が固定のスロットマシン群。
 pub struct Bandit {
     rates: Array1<f32>,
 }
@@ -45,6 +50,7 @@ impl Bandit {
     }
 }
 
+/// 本 1.5「非定常問題」: 当たり確率が play のたびにランダムウォークするスロットマシン群。
 pub struct NonStatBandit {
     rates: Array1<f32>,
 }
@@ -65,6 +71,7 @@ impl NonStatBandit {
     }
 }
 
+/// 本 1.5.2「非定常問題を解く」: 固定学習率 α(指数移動平均)で Q を更新する ε-greedy エージェント。
 pub struct AlphaAgent {
     epsilon: f32,
     alpha: f32,
@@ -91,15 +98,20 @@ impl AlphaAgent {
     }
 }
 
+/// 本 1.3.2「平均値を求める実装」: 報酬列の素朴な平均(逐次更新版との一致検証用)。
 pub fn average_q(rewards: &Array1<f32>) -> f32 {
     let sum: f32 = rewards.iter().sum();
     sum / rewards.len() as f32
 }
 
+/// 本 1.5.1「非定常問題を解くために」の一般形: Q ← Q + (r − Q)·step_size。
+/// step_size = 1/n なら標本平均(1.3 の特殊ケース)、固定 α なら指数移動平均。
+/// この一般化は MC(5章)・TD(6章)でも再利用される。
 pub fn update_q_step(q: f32, reward: f32, step_size: f32) -> f32 {
     q + (reward - q) * step_size
 }
 
+/// 本 1.3.2「平均値を求める実装」: 標本平均の逐次更新(step_size = 1/n)。
 pub fn update_q(q: f32, reward: f32, n: usize) -> f32 {
     let step_size = 1.0 / n as f32;
     update_q_step(q, reward, step_size)

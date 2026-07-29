@@ -1260,8 +1260,10 @@ name = "vol5"
 version = "0.1.0"
 dependencies = [
  "ndarray",
+ "ndarray-npy",
  "rand 0.10.2",
  "rand_distr 0.6.0",
+ "vol3",
 ]
 
 [[package]]

@@ -241,6 +241,35 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   (プラトーで f32 ノイズ −4e-4 を実測 — 厳密 ≥ は成立しない)、Old Faithful 収束先が
   文献正典値 (2.04,54.5) w=.356 / (4.29,80.0) w=.644 と一致=外部パリティ。
   **★ vol5 前半(素の Rust 区間)完走(2026-07-29)。**
-  次: 繰り延べていた分岐点に到着 — クレート昇格+v1.0 凍結(本番ツール化モード)を
-  ステップ 6(NN/VAE、PyTorch 写経)の前に挟むか、をユーザーが判断。
+  分岐は決着(2026-07-29): 昇格はせず、vol5 後半も vol3 path 依存の写経で続行。
+  本番フレームワークは **vol5 完走後に別リポジトリで新規構築**(vol3 は golden 参照=
+  自分で書いた仕様書。書き手は Claude、取り込みは submodule でなく Cargo git/path 依存)。
+  写経中の摩擦・失敗・v1.0 要求は docs/framework-v1-notes.md の台帳に随時記録する
+  (gitignore しない公開ドキュメント — 事件簿+要求リスト+摩擦台帳の 3 部構成)。
+  ステップ 6 完了(2026-07-29): 全節が vol3 で自作済みの内容(PyTorch 入門)のため読章
+  (vol4 の 7.1〜7.3 スキップの再演)。代わりに独自の**パリティ予行**を実施 —
+  gen_step06_golden.py(本家 6.4 を PyTorch 実走、データ+初期重みを vol3 向き(in,out)に
+  転置して npz 輸出)+ tests/step06.rs(vol5 が vol3 に path 依存開始。MLP+
+  Variable::sigmoid fn ポインタ+load_weights の余剰キー無視)。**結果: vol3 無改造で
+  iter 0 の loss ビット一致**、10⁴ iter 後 loss drift 6.1e-6 / 重み max|Δ| 2.35e-3
+  (比 400 倍 — 重み差は平坦方向、loss は二次感応。正しい実装同士の丸めカオスの指紋)。
+  教訓: バグ検出力は短ホライズンに集中 — 儀式は「iter0 ビット/序盤タイト/長期は統計」の
+  三段 tol(台帳に記載)。venv-torch は scratchpad(セッション限り、スクリプトで再生成可)。
+  ステップ 7 完了(2026-07-29): vae.rs — reparameterize は二段 API(_with_eps 注入口+
+  rng ラッパー、eps は定数 Variable の合成スタイル)、kl_divergence は本の 2×ELBO 流儀
+  (標準 KL の 2 倍 — doc 冒頭に明記)、Encoder/Decoder/VAE 複合レイヤ(named_params
+  階層委譲。Layer trait の forward 強制は unimplemented! で穴埋め — 抱き合わせ問題として
+  台帳行き)。**KL 係数事件 = パリティ儀式の初獲物**: 本の L2 は標準 KL の 2 倍(両項から
+  ½ を落とした 2×ELBO 流儀で自己整合)、初版は L1=本流儀+KL=標準流儀の混在で KL 重みが
+  半減 — iter0 diff 0.107(=初期 KL 値)と収束 30.3 vs 38.8 の両面で検出・定量確認。
+  単体テストでは原理的に捕まらない(各項は単体で正しい)。tol の教訓: 2.5 万要素の f32 和に
+  絶対 1e-5 は ε 以下で不可能 — tol は要素数・値域から導出。
+  検証: 単体(KL 手計算、数値微分 h=5e-3 の教訓再演 — 線形関数は打ち切り誤差ゼロで
+  大きい h が純利益、統計 1 万点)+ tier1/2(golden: gen_step07_golden.py、eps 輸出で
+  乱数差を無効化。10 iter loss diff 4.6e-5 ≈ ε、重み max|Δ| 5.35e-4)+ tier3(--full の
+  30 epoch 曲線、band assert。実測 38.8194 vs 38.8193 — 独立乱数の期待値一致、band は
+  緩いまま保つ)。Adam eps 置き場所の容疑は解除(通常勾配スケールでは検出限界以下)。
+  生成 7.4.4: examples/step07_generate.rs(30 epoch 学習 → z〜N(0,I) 64 枚 PGM グリッド、
+  no_grad RAII ガード、画像ごと min-max 正規化)— 多様な数字+VAE 特有のボケの正解顔。
+  **★ ステップ 7 完走。**次: ステップ 8(拡散モデルの理論 — 理論章、読章中心の見込み)。
 - vol2・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

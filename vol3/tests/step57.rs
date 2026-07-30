@@ -1,18 +1,16 @@
 use ndarray::ArrayD;
-use vol3::utils::random_array;
-use rand_distr::Uniform;
 use rand::SeedableRng;
+use rand_distr::Uniform;
 use vol3::cnn::Col2Im;
 use vol3::function::Function;
+use vol3::utils::random_array;
 use vol3::utils::{EPSILON_FOR_DIFF, approx_equal_arrayd};
 use vol3::variable::Variable;
 
 #[test]
 fn test_im2col_col2im_duality() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let x_val =
-        random_array((1, 1, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
-            .into_dyn();
+    let x_val = random_array((1, 1, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
     let x = Variable::new(x_val);
 
     // (1, 1, 4, 4) kernel=2, stride=1, pad=0 -> OH=3, OW=3
@@ -55,14 +53,9 @@ where
 #[test]
 fn test_conv2d_simple_gradient_check() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let x_val =
-        random_array((1, 2, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
-            .into_dyn();
-    let w_val =
-        random_array((3, 2, 2, 2), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
-            .into_dyn();
-    let b_val =
-        random_array((3,), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
+    let x_val = random_array((1, 2, 4, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
+    let w_val = random_array((3, 2, 2, 2), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
+    let b_val = random_array((3,), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
 
     let x = Variable::new(x_val.clone());
     let w = Variable::new(w_val.clone());
@@ -93,9 +86,7 @@ fn test_conv2d_simple_gradient_check() {
 #[test]
 fn test_pooling_simple_gradient_check() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let x_val =
-        random_array((1, 2, 5, 5), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
-            .into_dyn();
+    let x_val = random_array((1, 2, 5, 5), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
     let x = Variable::new(x_val);
 
     let y = x.pooling_simple((2, 2), (2, 2), (0, 0));
@@ -115,8 +106,7 @@ fn test_pooling_simple_gradient_check() {
 #[test]
 fn test_max_gradient_check() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let x_val = random_array((2, 3, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng)
-        .into_dyn();
+    let x_val = random_array((2, 3, 4), Uniform::new(0.0, 1.0).unwrap(), &mut rng).into_dyn();
     let x = Variable::new(x_val);
 
     let y = x.max_axis(1, false);

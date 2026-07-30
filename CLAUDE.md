@@ -271,5 +271,23 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   緩いまま保つ)。Adam eps 置き場所の容疑は解除(通常勾配スケールでは検出限界以下)。
   生成 7.4.4: examples/step07_generate.rs(30 epoch 学習 → z〜N(0,I) 64 枚 PGM グリッド、
   no_grad RAII ガード、画像ごと min-max 正規化)— 多様な数字+VAE 特有のボケの正解顔。
-  **★ ステップ 7 完走。**次: ステップ 8(拡散モデルの理論 — 理論章、読章中心の見込み)。
+  **★ ステップ 7 完走。**
+  ステップ 8〜9(2026-07-30): 8 は読章+理論検算 — diffusion.rs のスケジューラ
+  (β linspace・ᾱ cumprod、add_noise/denoise は noise 注入口付き二段 API、t=1 は
+  ᾱ_0≡1 で Python 負インデックスの罠を数学で解決)に「逐次 vs 閉形式」の統計 assert
+  として ✪ 導出を埋め込み。9 の下準備で vol3 拡張 3 連: Concat/SliceAxis(双対を
+  concat 合成で閉じ、二階テスト付き)、UpsampleBilinear2x/Grad(**随伴ペア=互いが
+  互いの backward**、align_corners=False の座標式、内積の随伴検証。数値微分の丸め誤差
+  ε·|f|/2h は |f| に比例、h=大は線形関数で純利益、の教訓と eps→h 改名)、BatchNorm2d
+  (**事前登録制** — 容疑者 4 件[biased/unbiased 非対称・momentum 向き・eps 位置・統計軸]を
+  先に per-op golden 化して一発全クリア。running stats は Variable 二重役: named_params に
+  載せ params から除外)。unet.rs(pos_encoding は本家フレーバー厳守、concat 順序
+  [up, skip]、時刻埋め込みはブロック入力へ (N,in_ch,1,1) 加算、勾配カバレッジ 62 本テスト)。
+  **step09 パリティ三段完結**: tier1/2 = iter0 loss 7 桁一致(全部品の一括証明)、5 iter
+  ドリフトは重み 6e-3 / BN running stats 1.5e-2 の二層構造(2 クラス tol)、サンプリング
+  部分軌道(t=10→1)は golden 重み再注入で隔離し <1e-4。tier3 = 縮小構成(1024 枚・
+  batch 64・5 epoch)の統計 band、final 0.0533 vs PyTorch 0.0596(16 バッチ平均の
+  シード揺らぎ 1σ 台)。実測 703ms/iter(batch16・release)。784 倍罠(本の mse_loss=
+  全要素平均 vs vol3=÷N)は事前警告で未遂。
+  残: 生成(本構成 60k×10epoch ≈ 一晩、任意の案 B)+ステップ 10(条件付き拡散+CFG)。
 - vol2・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

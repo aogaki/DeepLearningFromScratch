@@ -1,5 +1,6 @@
-use crate::variable::Variable;
 use crate::utils::random_array;
+use crate::variable::Variable;
+use ndarray::Array;
 use rand_distr::Normal;
 use std::cell::RefCell;
 
@@ -93,16 +94,11 @@ pub struct Linear {
     pub w: Parameter,
     pub b: Option<Parameter>,
 }
-
 impl Linear {
     pub fn new(in_size: usize, out_size: usize, nobias: bool, rng: &mut impl rand::Rng) -> Self {
         // Xavierの初期値に近いスケール(1 / sqrt(in_size))
         let std_dev = 1.0 / (in_size as f32).sqrt();
-        let w_data = random_array(
-            (in_size, out_size),
-            Normal::new(0.0, std_dev).unwrap(),
-            rng,
-        );
+        let w_data = random_array((in_size, out_size), Normal::new(0.0, std_dev).unwrap(), rng);
         let w = Variable::new(w_data.into_dyn());
 
         let b = if nobias {
@@ -115,7 +111,6 @@ impl Linear {
         Self { w, b }
     }
 }
-
 impl Layer for Linear {
     fn params(&self) -> Vec<Parameter> {
         let mut p = vec![self.w.clone()];
@@ -143,7 +138,6 @@ pub struct TwoLayerNet {
     pub l1: Linear,
     pub l2: Linear,
 }
-
 impl TwoLayerNet {
     pub fn new(
         in_size: usize,
@@ -157,7 +151,6 @@ impl TwoLayerNet {
         }
     }
 }
-
 impl Layer for TwoLayerNet {
     fn params(&self) -> Vec<Parameter> {
         let mut p = Vec::new();
@@ -192,7 +185,6 @@ pub struct MLP {
     pub layers: Vec<Linear>,
     pub activation: fn(&Variable) -> Variable,
 }
-
 impl MLP {
     pub fn new(
         sizes: &[usize],
@@ -210,7 +202,6 @@ impl MLP {
         Self { layers, activation }
     }
 }
-
 impl Layer for MLP {
     fn params(&self) -> Vec<Parameter> {
         let mut p = Vec::new();
@@ -248,7 +239,6 @@ pub struct Conv2d {
     pub stride: (usize, usize),
     pub pad: (usize, usize),
 }
-
 impl Conv2d {
     pub fn new(
         in_channels: usize,
@@ -279,7 +269,6 @@ impl Conv2d {
         Self { w, b, stride, pad }
     }
 }
-
 impl Layer for Conv2d {
     fn params(&self) -> Vec<Parameter> {
         let mut p = vec![self.w.clone()];
@@ -307,7 +296,6 @@ pub struct RNN {
     pub h2h: Linear,
     pub h: std::cell::RefCell<Option<Variable>>,
 }
-
 impl RNN {
     pub fn new(in_size: usize, hidden_size: usize, rng: &mut impl rand::Rng) -> Self {
         Self {
@@ -321,7 +309,6 @@ impl RNN {
         *self.h.borrow_mut() = None;
     }
 }
-
 impl Layer for RNN {
     fn params(&self) -> Vec<Parameter> {
         self.named_params().into_iter().map(|(_, p)| p).collect()
@@ -366,7 +353,6 @@ pub struct LSTM {
     pub h: RefCell<Option<Variable>>,
     pub c: RefCell<Option<Variable>>,
 }
-
 impl LSTM {
     pub fn new(in_size: usize, hidden_size: usize, rng: &mut impl rand::Rng) -> Self {
         Self {
@@ -430,7 +416,6 @@ impl LSTM {
         h_new
     }
 }
-
 impl Layer for LSTM {
     fn forward(&self, x: &Variable) -> Variable {
         self.forward(x)
@@ -470,9 +455,113 @@ impl Layer for LSTM {
         p
     }
 }
+
+/// Vol5 での利用のため拡張
+// ==========================================
+// BatchNorm2d
+// ==========================================
+pub struct BatchNorm2d {
+    pub gamma: Parameter,
+    pub beta: Parameter,
+    pub running_mean: Parameter,
+    pub running_var: Parameter,
+    pub eps: f32,
+    pub momentum: f32,
+}
+impl BatchNorm2d {
+    pub fn new(c: usize) -> Self {
+        Self {
+            gamma: Variable::new(Array::ones((c,)).into_dyn()),
+            beta: Variable::new(Array::zeros((c,)).into_dyn()),
+            running_mean: Variable::new(Array::zeros((c,)).into_dyn()),
+            running_var: Variable::new(Array::ones((c,)).into_dyn()),
+            eps: 1e-5, // Adam の 1e-8 ではなく BatchNorm 標準の 1e-5
+            momentum: 0.1,
+        }
+    }
+}
+impl Layer for BatchNorm2d {
+    fn params(&self) -> Vec<Parameter> {
+        // 【要件】running stats はオプティマイザの更新対象 (params) から意図的に除外
+        vec![self.gamma.clone(), self.beta.clone()]
+    }
+    fn named_params(&self) -> Vec<(String, Parameter)> {
+        // 【要件】保存・ロード用 (named_params) には全て含める
+        vec![
+            ("gamma".to_string(), self.gamma.clone()),
+            ("beta".to_string(), self.beta.clone()),
+            ("running_mean".to_string(), self.running_mean.clone()),
+            ("running_var".to_string(), self.running_var.clone()),
+        ]
+    }
+    fn forward(&self, x: &Variable) -> Variable {
+        let shape = x.shape();
+        assert_eq!(shape.len(), 4, "BatchNorm2d expects 4D input (N, C, H, W)");
+        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+
+        // チャンネルごとの計算を行うため、他次元を潰すブロードキャスト用形状
+        let axes_shape = vec![1, c, 1, 1];
+        let eps_var = Variable::new(ndarray::arr0(self.eps).into_dyn());
+        if crate::config::Config::train_mode() {
+            // ========================================================
+            // Train モード: 全て Variable の合成演算で書く (backward 自動化)
+            // ========================================================
+            let m = (n * h * w) as f32;
+            let m_var = Variable::new(ndarray::arr0(m).into_dyn());
+            // 1. Mean (N, H, W 軸で sum して m で割る)
+            let sum = x.sum_to(&axes_shape);
+            let batch_mean = &sum / &m_var;
+            // 2. Variance (Biased)
+            let diff = x - &batch_mean;
+            let sq_diff = diff.powf(2.0);
+            let batch_var_biased = sq_diff.sum_to(&axes_shape) / &m_var;
+            // 3. Normalize: eps はルートの中
+            let std = (&batch_var_biased + &eps_var).powf(0.5);
+            let x_hat = &diff / &std;
+            // 4. Scale and Shift (gamma / beta もブロードキャスト形状に)
+            let gamma_b = self.gamma.reshape(&axes_shape);
+            let beta_b = self.beta.reshape(&axes_shape);
+            let out = &x_hat * &gamma_b + &beta_b;
+            // ========================================================
+            // 統計量の更新 (副作用・計算グラフには乗せない)
+            // ========================================================
+            let mom = self.momentum;
+
+            // 【最凶の罠】バッチ分散の蓄積には biased(÷N) ではなく unbiased(÷N-1) を使う
+            let m_unbiased_factor = if m > 1.0 { m / (m - 1.0) } else { 1.0 };
+            // (1, C, 1, 1) を (C,) に戻す
+            let b_mean_arr = batch_mean.data().into_shape_with_order(vec![c]).unwrap();
+            let b_var_arr = batch_var_biased
+                .data()
+                .into_shape_with_order(vec![c])
+                .unwrap();
+            // 【罠】PyTorch 式の漸化式向き: running = (1 - m) * running + m * batch
+            let new_rm = self.running_mean.data() * (1.0 - mom) + &b_mean_arr * mom;
+            self.running_mean.set_data(new_rm);
+            let new_rv =
+                self.running_var.data() * (1.0 - mom) + &b_var_arr * (mom * m_unbiased_factor);
+            self.running_var.set_data(new_rv);
+            out
+        } else {
+            // ========================================================
+            // Eval モード: バッチ統計を使わず、保存された running stats を使用
+            // ========================================================
+            let rm = self.running_mean.reshape(&axes_shape);
+            let rv = self.running_var.reshape(&axes_shape);
+            let std = (&rv + &eps_var).powf(0.5);
+            let x_hat = (x - &rm) / &std;
+            let gamma_b = self.gamma.reshape(&axes_shape);
+            let beta_b = self.beta.reshape(&axes_shape);
+
+            &x_hat * &gamma_b + &beta_b
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::approx_equal_arrayd;
+    use ndarray::ArrayD;
 
     #[test]
     fn test_linear_params() {
@@ -494,5 +583,111 @@ mod tests {
         let x = Variable::new(ndarray::Array::zeros((10, 2)).into_dyn());
         let y = l_nobias.forward(&x);
         assert_eq!(y.shape(), vec![10, 3]);
+    }
+
+    #[test]
+    fn test_batchnorm2d_params_isolation() {
+        // 1. オプティマイザ食われ事故の封じ込めテスト
+        let bn = BatchNorm2d::new(3);
+
+        let params = bn.params();
+        assert_eq!(
+            params.len(),
+            2,
+            "params() should only contain gamma and beta"
+        );
+
+        let named_params = bn.named_params();
+        assert_eq!(
+            named_params.len(),
+            4,
+            "named_params() should contain gamma, beta, running_mean, running_var"
+        );
+    }
+
+    #[test]
+    fn test_batchnorm2d_golden() {
+        // 2. per-op golden テスト (完全なる容疑者の一掃)
+        let file = std::fs::File::open("dataset/batchnorm_golden.npz").unwrap();
+        let mut npz = ndarray_npy::NpzReader::new(file).unwrap();
+        macro_rules! load {
+            ($name:expr) => {
+                npz.by_name($name).expect(concat!("Failed to load ", $name))
+            };
+        }
+        let x1_data: ArrayD<f32> = load!("x1.npy");
+        let gy1_data: ArrayD<f32> = load!("gy1.npy");
+        let gamma_data: ArrayD<f32> = load!("gamma.npy");
+        let beta_data: ArrayD<f32> = load!("beta.npy");
+        // --- 1周目: Train Forward & Backward ---
+        let bn = BatchNorm2d::new(3);
+        bn.gamma.set_data(gamma_data.clone());
+        bn.beta.set_data(beta_data.clone());
+        let x1 = Variable::new(x1_data);
+        let y1 = bn.forward(&x1);
+        // 容疑者クリア確認: 統計の軸(N·H·W), biased 分散, eps の位置, γ/β
+        let expected_y1: ArrayD<f32> = load!("y1.npy");
+        assert!(
+            approx_equal_arrayd(&y1.data(), &expected_y1, 1e-4),
+            "y1 failed"
+        );
+        // Backward 実行 (合成スタイルにつき完全自動の筈)
+        y1.set_grad(Variable::new(gy1_data));
+        y1.backward(false, false);
+        // 容疑者クリア確認: gx1, dgamma1, dbeta1 がピタリと一致するか
+        let expected_gx1: ArrayD<f32> = load!("gx1.npy");
+        let expected_dgamma1: ArrayD<f32> = load!("dgamma1.npy");
+        let expected_dbeta1: ArrayD<f32> = load!("dbeta1.npy");
+        assert!(
+            approx_equal_arrayd(&x1.grad().unwrap(), &expected_gx1, 1e-4),
+            "gx1 failed"
+        );
+        assert!(
+            approx_equal_arrayd(&bn.gamma.grad().unwrap(), &expected_dgamma1, 1e-4),
+            "dgamma1 failed"
+        );
+        assert!(
+            approx_equal_arrayd(&bn.beta.grad().unwrap(), &expected_dbeta1, 1e-4),
+            "dbeta1 failed"
+        );
+        // 容疑者クリア確認: momentum の向き, unbiased 蓄積
+        let expected_rm1: ArrayD<f32> = load!("rm1.npy");
+        let expected_rv1: ArrayD<f32> = load!("rv1.npy");
+        assert!(
+            approx_equal_arrayd(&bn.running_mean.data(), &expected_rm1, 1e-4),
+            "rm1 failed"
+        );
+        assert!(
+            approx_equal_arrayd(&bn.running_var.data(), &expected_rv1, 1e-4),
+            "rv1 failed"
+        );
+        // --- 2周目: Train Forward (漸化式の 2 周目チェック) ---
+        let x2_data: ArrayD<f32> = load!("x2.npy");
+        let x2 = Variable::new(x2_data);
+        let _y2 = bn.forward(&x2);
+        let expected_rm2: ArrayD<f32> = load!("rm2.npy");
+        let expected_rv2: ArrayD<f32> = load!("rv2.npy");
+        assert!(
+            approx_equal_arrayd(&bn.running_mean.data(), &expected_rm2, 1e-4),
+            "rm2 failed"
+        );
+        assert!(
+            approx_equal_arrayd(&bn.running_var.data(), &expected_rv2, 1e-4),
+            "rv2 failed"
+        );
+        {
+            let _guard = crate::config::test_mode();
+
+            // --- 3周目: Eval 分岐 ---
+            let x3_data: ArrayD<f32> = load!("x3.npy");
+            let x3 = Variable::new(x3_data);
+            let y3_eval = bn.forward(&x3);
+            // 容疑者クリア確認: バッチ統計を使わず running stats だけで正規化されているか
+            let expected_y3_eval: ArrayD<f32> = load!("y3_eval.npy");
+            assert!(
+                approx_equal_arrayd(&y3_eval.data(), &expected_y3_eval, 1e-4),
+                "y3_eval failed"
+            );
+        }
     }
 }

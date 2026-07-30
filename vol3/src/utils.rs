@@ -42,6 +42,11 @@ where
     ndarray::Array::from_shape_simple_fn(shape, || dist.sample(rng))
 }
 
+// 実数の比較用関数
+pub fn approx_eq(a: f32, b: f32, tol: f32) -> bool {
+    (a - b).abs() < tol
+}
+
 // 形の一致 + 全要素の絶対誤差で比較(浮動小数に == は使わない)
 pub fn approx_equal_arrayd(a: &ArrayD<f32>, b: &ArrayD<f32>, tol: f32) -> bool {
     if a.shape() != b.shape() {

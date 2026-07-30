@@ -1,14 +1,22 @@
-use vol3::utils::random_array;
 use rand_distr::Uniform;
 use vol3::functions::mean_squared_error;
+use vol3::utils::random_array;
 use vol3::variable::Variable;
 
 fn main() {
     // Generate toy dataset
     // x = np.random.rand(100, 1)
     // y = 5 + 2 * x + np.random.rand(100, 1)
-    let x_data = random_array((100, 1), Uniform::new(0.0f32, 1.0f32).unwrap(), &mut rand::rng());
-    let noise = random_array((100, 1), Uniform::new(0.0f32, 1.0f32).unwrap(), &mut rand::rng());
+    let x_data = random_array(
+        (100, 1),
+        Uniform::new(0.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    );
+    let noise = random_array(
+        (100, 1),
+        Uniform::new(0.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    );
     let y_data = 5.0 + 2.0 * &x_data + noise;
 
     let x = Variable::new(x_data.into_dyn());

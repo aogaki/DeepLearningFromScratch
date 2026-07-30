@@ -1,13 +1,21 @@
-use vol3::utils::random_array;
 use rand_distr::Uniform;
 use vol3::functions::mean_squared_error;
 use vol3::layers::{Layer, MLP};
 use vol3::optimizers::{Optimizer, SGD};
+use vol3::utils::random_array;
 use vol3::variable::Variable;
 
 fn main() {
-    let x_data = random_array((100, 1), Uniform::new(0.0f32, 1.0f32).unwrap(), &mut rand::rng());
-    let noise = random_array((100, 1), Uniform::new(0.0f32, 1.0f32).unwrap(), &mut rand::rng());
+    let x_data = random_array(
+        (100, 1),
+        Uniform::new(0.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    );
+    let noise = random_array(
+        (100, 1),
+        Uniform::new(0.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    );
     let mut y_data = x_data.mapv(|v| (2.0 * std::f32::consts::PI * v).sin());
     y_data = y_data + noise;
 

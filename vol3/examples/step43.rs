@@ -1,6 +1,6 @@
-use vol3::utils::random_array;
 use rand_distr::Uniform;
 use vol3::functions::{linear, mean_squared_error};
+use vol3::utils::random_array;
 use vol3::variable::Variable;
 
 fn predict(x: &Variable, w1: &Variable, b1: &Variable, w2: &Variable, b2: &Variable) -> Variable {
@@ -10,8 +10,16 @@ fn predict(x: &Variable, w1: &Variable, b1: &Variable, w2: &Variable, b2: &Varia
 }
 
 fn main() {
-    let x_data = random_array((100, 1), Uniform::new(0.0f32, 1.0f32).unwrap(), &mut rand::rng());
-    let noise = random_array((100, 1), Uniform::new(0.0f32, 1.0f32).unwrap(), &mut rand::rng());
+    let x_data = random_array(
+        (100, 1),
+        Uniform::new(0.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    );
+    let noise = random_array(
+        (100, 1),
+        Uniform::new(0.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    );
     let mut y_data = x_data.mapv(|v| (2.0 * std::f32::consts::PI * v).sin());
     y_data = y_data + noise;
 
@@ -22,9 +30,17 @@ fn main() {
     let h = 10;
     let o = 1;
 
-    let w1_data = random_array((i, h), Uniform::new(-1.0f32, 1.0f32).unwrap(), &mut rand::rng()) * 0.01;
+    let w1_data = random_array(
+        (i, h),
+        Uniform::new(-1.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    ) * 0.01;
     let b1_data = ndarray::Array::zeros((h,));
-    let w2_data = random_array((h, o), Uniform::new(-1.0f32, 1.0f32).unwrap(), &mut rand::rng()) * 0.01;
+    let w2_data = random_array(
+        (h, o),
+        Uniform::new(-1.0f32, 1.0f32).unwrap(),
+        &mut rand::rng(),
+    ) * 0.01;
     let b2_data = ndarray::Array::zeros((o,));
 
     let w1 = Variable::new(w1_data.into_dyn());

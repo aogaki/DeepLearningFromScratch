@@ -46,6 +46,10 @@ vol3 で確立し、vol4(DQN/方策勾配)・vol5 で実戦済みのもの。新
   分離。Optimizer は `params()` の Rc ハンドル clone を保持(split-borrow 問題が消滅)。
 - **合成スタイル**: dropout・ReLU は「マスク定数 × Mul」で合成 — 手書き backward なし、
   二階微分も自動で正しい。プリミティブを増やすより合成を優先する。
+- **随伴ペアの型**(線形演算子): A と Aᵀ を Function ペアにして**互いの backward** にする
+  (Im2Col/Col2Im、Concat/SliceAxis、Upsample/UpsampleGrad)。二階が自動で閉じ、
+  silent なグラフ切断や `unimplemented!` が構造的に消える。検証はセットで:
+  ①手計算値(非対称データ)②内積の随伴検証(Σ gy⊙(Ax) の数値微分 = Aᵀgy)③二階の配線テスト。
 - **DataLoader は `IntoIterator for &mut`** で「1 エポック = 1 for ループ」。
   Dataset は関連型 Target(usize 固定にしない)。
 - **save/load は npz・2 パス atomic**(全検証後に一括代入 — 部分書き込みなし)。
@@ -114,6 +118,9 @@ vol3 で確立し、vol4(DQN/方策勾配)・vol5 で実戦済みのもの。新
 - **パリティ儀式のツール化**: golden 生成スクリプトの型(`str(np.float32)` 最短表記、
   npz 橋、シード対応表)を新リポジトリの `tools/` に標準装備。
 - **wgpu v2 の継ぎ目**: 数値演算を名前付き関数の裏に隠す規約を最初から。
+- **CPU 並列の設計余地**(2026-07-30、UNet 学習 703ms/iter を体感したユーザーの要望):
+  rayon によるバッチ軸データ並列・im2col/matmul のスレッド化。GPU(wgpu)が本命だが、
+  CPU 経路にも並列の継ぎ目を残す。
 - Adam は本家準拠の lr_t 畳み込み実装済み(vol3)— そのまま持ち越し。
 
 ### vol5 後半で判明する見込みの要求(写経しながら確定させる)
@@ -128,6 +135,8 @@ vol3 で確立し、vol4(DQN/方策勾配)・vol5 で実戦済みのもの。新
 
 | 日付 | 発生箇所 | 摩擦 | v1.0 への含意 |
 | --- | --- | --- | --- |
+| 2026-07-30 | **ステップ 9 UNet 学習パリティ(tier1/2)**: iter 0 の loss が 7 桁一致 = Conv/BN(train)/ReLU/MaxPool/Upsample/Concat/pos_encoding/ブロードキャスト加算の意味論を一括証明。5 iter 後のドリフトは**二層構造** — 学習重み max 6e-3(Adam が移動量 ~lr に正規化するため)vs BN running stats max 1.5e-2(0.1×バッチ統計/iter で物差しが別)。ドリフトはネット中央(bot1)に集中し出力層は静か(out/b 1e-6) | **更新機構が違う量は別の tol で測る**(重み 1e-2 / running_* 5e-2 の 2 クラス assert)。サンプリング部分軌道の検証は「golden 重みを再注入してから」— 学習ドリフトを持ち込むと経路の意味論とカオスが混ざって判定不能になる(検証しつつ set_data で注入し直す一石二鳥の設計が有効だった) | パリティ儀式の標準形に「**位相ごとに golden 状態を再注入して隔離**」を追加。損失正規化の流儀(全要素平均 vs バッチ平均)もチェックリスト入り(784 倍罠 — KL 係数事件の同族、今回は事前警告で未遂) |
+| 2026-07-30 | **BatchNorm2d(vol3 拡張、UNet 前準備)— 事前登録制の成功例**: 実装前に容疑者 4 件(正規化=biased/蓄積=unbiased の非対称、momentum=0.1 の向き、eps=1e-5 の位置、統計軸=N·H·W)を per-op golden 化 → 初回実装で全 assert 一発通過 | 「**書く前に罠を golden に固定する**」方式は、書いた後にデバッグする方式より速い(今回デバッグ時間ゼロ)。running stats は「params から除外・named_params に含める」— vol3 の 2 系統分離が“学習しない状態”にそのまま適合した | v1.0 の新オペレータ追加手順を「①意味論の容疑者リストアップ → ②per-op golden 生成 → ③実装 → ④全 assert」の順で標準化する |
 | 2026-07-29 | **ステップ 7 パリティ儀式の初獲物**: VAE の loss が iter 0 から 0.107 ズレ、学習後は 30.3 vs 38.8 に発散。犯人は KL の係数 — 本の L2 は標準 KL の 2 倍(本は再構成 NLL と KL の両方から ½ を落とした「2×ELBO」流儀で自己整合)、ユーザーは L1=本流儀+KL=標準流儀を混在させ KL の相対重みが半減 | **重み付け・流儀の混在は単体テストで原理的に検出不能**(各項が単体では「正しい」ため)。目的関数の係数はパリティでしか守れない。もう 1 つ: 巨大和(2.5 万要素)の f32 loss に絶対 tol 1e-5 は ε 以下の要求で物理的に不可能 — tol は和の要素数でスケールさせる | パリティ儀式に「**損失関数の係数一致**」を明示項目として入れる。tol 設計は observable の要素数・値域から導出する(一律の magic number にしない)。**修正後の実測**: 10 iter で loss diff 4.6e-5(相対 ≈ ε)・重み max\|Δ\| 5.35e-4(relu 境界のマスク反転による離散分岐と推定)、30 epoch の統計は 38.8194 vs 38.8193(独立乱数で期待値一致 — band assert は緩いまま保つ)。事前登録していた容疑者「Adam の eps 置き場所差(DeZero `√v+eps` vs PyTorch `√v̂+eps`)」は通常の勾配スケールでは検出限界以下と確定・容疑解除 |
-| 2026-07-29 | ステップ 7 VAE の複合レイヤ(Encoder は (μ, ln σ²) の 2 出力、VAE の forward は rng が必要) | **Layer trait の抱き合わせ問題**: named_params/save/load が欲しいだけなのに `forward(&Variable) -> Variable` の実装を強制され、多出力・rng 付き forward は型に収まらない → `unimplemented!` で穴埋め(= `&dyn Layer` 経由の forward 呼び出しが実行時パニックする地雷) | v1.0 では**パラメータ管理(Module)と関数性(forward)を別 trait に分離**する。PyTorch の nn.Module も forward のシグネチャを型で縛っていない — 縛るなら関連型か、forward を持たない Module trait+個別の呼び出しメソッドで |
+| 2026-07-29 | ステップ 7 VAE の複合レイヤ(Encoder は (μ, ln σ²) の 2 出力、VAE の forward は rng が必要)。**2 例目(2026-07-30)**: ステップ 9 UNet — ConvBlock は forward(x, v)、UNet は forward(x, t) でどちらも型に収まらず、同じ unimplemented! 穴埋めを再演 | **Layer trait の抱き合わせ問題**: named_params/save/load が欲しいだけなのに `forward(&Variable) -> Variable` の実装を強制され、多出力・rng 付き・多入力 forward は型に収まらない → `unimplemented!` で穴埋め(= `&dyn Layer` 経由の forward 呼び出しが実行時パニックする地雷) | v1.0 では**パラメータ管理(Module)と関数性(forward)を別 trait に分離**する。PyTorch の nn.Module も forward のシグネチャを型で縛っていない — 縛るなら関連型か、forward を持たない Module trait+個別の呼び出しメソッドで |
 | 2026-07-29 | ステップ 6 パリティ予行(sin 回帰 1→10→1、SGD lr=0.2、10⁴ iter) | **摩擦なし** — npz 橋(Python→Rust 方向・W 転置)・sigmoid・MSE・SGD が vol3 無改造で一致。**iter 0 の loss はビット一致**。10⁴ iter 後: loss drift 6.1e-6、重み max \|Δ\| 2.35e-3(**比 ~400 倍** — 重み差は損失曲面の平坦方向に住み、loss は二次でしか感応しない。正しい実装同士が丸めでカオス的に離れた指紋) | **パリティ儀式の三段 tol 設計**: ①iter 0 はビット級(意味論の証明)②序盤 ~100 iter はタイト 1e-5 級(バグ検出力の最大帯 — 丸めはまだ小さく、バグなら即 1e-3 超)③長期は重み一致を要求しない(測れるのはカオスであって正しさではない — 主張は loss 帯域・最終品質など統計量で) |

@@ -116,9 +116,12 @@ pub struct UNet {
     pub up1: ConvBlock,
     pub out: Conv2d,
     pub time_embed_dim: usize,
+    pub label_emb: Linear,
 }
 impl UNet {
     pub fn new(in_ch: usize, time_embed_dim: usize, rng: &mut impl rand::Rng) -> Self {
+        let label_emb = Linear::new(10, time_embed_dim, true, rng);
+
         Self {
             down1: ConvBlock::new(in_ch, 64, time_embed_dim, rng),
             down2: ConvBlock::new(64, 128, time_embed_dim, rng),
@@ -131,13 +134,32 @@ impl UNet {
             out: Conv2d::new(64, in_ch, (1, 1), (1, 1), (0, 0), false, rng),
 
             time_embed_dim,
+            label_emb,
         }
     }
 
-    pub fn forward(&self, x: &Variable, t: &Array1<f32>) -> Variable {
+    pub fn forward(
+        &self,
+        x: &Variable,
+        t: &Array1<f32>,
+        labels: Option<&ndarray::Array1<usize>>,
+    ) -> Variable {
         // v を 1 度だけ計算
         let pe_data = pos_encoding(t, self.time_embed_dim);
-        let v = Variable::new(pe_data.into_dyn());
+        let mut v = Variable::new(pe_data.into_dyn());
+
+        // CFG: labels が Some の場合のみ、one-hot 行列を作って Linear に通して加算
+        if let Some(lbls) = labels {
+            let n = lbls.len();
+            let mut one_hot = ndarray::Array2::<f32>::zeros((n, 10));
+            for (i, &l) in lbls.iter().enumerate() {
+                one_hot[[i, l]] = 1.0;
+            }
+            let one_hot_var = Variable::new(one_hot.into_dyn());
+            let l_emb = self.label_emb.forward(&one_hot_var);
+
+            v = v + &l_emb;
+        }
 
         // --- Down ---
         let d1 = self.down1.forward(x, &v);
@@ -165,6 +187,8 @@ impl UNet {
 impl Layer for UNet {
     fn params(&self) -> Vec<Parameter> {
         let mut p = Vec::new();
+        // ★ label_emb を追加 (1 パラメータ)
+        p.extend(self.label_emb.params());
         p.extend(self.down1.params());
         p.extend(self.down2.params());
         p.extend(self.bot1.params());
@@ -182,6 +206,9 @@ impl Layer for UNet {
                     .map(|(k, v)| (format!("{}/{}", name, k), v)),
             );
         };
+        // ★ label_emb の登録 (内部で label_emb/W に展開される)
+        add("label_emb", self.label_emb.named_params());
+
         add("down1", self.down1.named_params());
         add("down2", self.down2.named_params());
         add("bot1", self.bot1.named_params());
@@ -213,34 +240,35 @@ mod tests {
         // バッチサイズ=2 に対応する2つの時刻
         let t = array![10.0, 20.0];
         // ここを通ることで「(N, C, 1, 1) と (N, C, H, W) の Add」が vol3 で正しく処理されることが証明される
-        let y = unet.forward(&x, &t);
+        let y = unet.forward(&x, &t, None);
 
         assert_eq!(y.shape(), &[2, 1, 28, 28], "UNet output shape mismatch");
     }
 
     #[test]
     fn test_unet_gradient_coverage() {
-        // 2. 勾配カバレッジテスト (配線忘れの検出とパラメータ数の釘刺し)
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let unet = UNet::new(1, 100, &mut rng);
-        let x_data = Array::zeros((2, 1, 28, 28)).into_dyn();
+        let x_data = ndarray::Array::zeros((2, 1, 28, 28)).into_dyn();
         let x = Variable::new(x_data);
-        let t = array![10.0, 20.0];
-        // 順伝播
-        let y = unet.forward(&x, &t);
-        let loss = y.sum();
+        let t = ndarray::array![10.0, 20.0];
 
-        // 逆伝播 (ここで全パラメータに勾配が流れるはず)
+        // ★ 追加: ダミーのラベルを作成
+        let labels = ndarray::array![3, 7];
+
+        // ★ None ではなく Some(&labels) を渡すことで label_emb を計算グラフに参加させる
+        let y = unet.forward(&x, &t, Some(&labels));
+        let loss = y.sum();
+        // 逆伝播
         loss.backward(false, false);
         let params = unet.params();
-
-        // 釘: ConvBlock(12) × 5 + out(2) = 62
+        // 釘: 63 個
         assert_eq!(
             params.len(),
-            62,
-            "Total parameter count should be exactly 62"
+            63,
+            "Total parameter count should be exactly 63"
         );
-        // 全パラメータが計算グラフに参加しているか (勾配をもっているか)
+
         for (i, p) in params.iter().enumerate() {
             assert!(
                 p.grad().is_some(),

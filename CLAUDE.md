@@ -289,5 +289,33 @@ Rust へ自分で移植しながら学ぶ。成果物より「自分の手で書
   batch 64・5 epoch)の統計 band、final 0.0533 vs PyTorch 0.0596(16 バッチ平均の
   シード揺らぎ 1σ 台)。実測 703ms/iter(batch16・release)。784 倍罠(本の mse_loss=
   全要素平均 vs vol3=÷N)は事前警告で未遂。
-  残: 生成(本構成 60k×10epoch ≈ 一晩、任意の案 B)+ステップ 10(条件付き拡散+CFG)。
+  ステップ 10 完了(2026-07-30〜31): 条件付き拡散+CFG。差分は本家どおり 3 点のみ —
+  ①label_emb(nn.Embedding 相当を **one-hot 定数 × Linear(nobias) の合成**で — 新部品ゼロ、
+  W (10,100) は転置不要で PyTorch と一致)を pos_encoding 出力へ加算 ②学習は
+  バッチ丸ごと 10% ラベルドロップ(Option が無条件経路の型)③サンプリングは 2 回
+  forward → eps_uncond + γ(eps_cond − eps_uncond) → 既存 denoise_with_noise(diffusion.rs
+  無改造 — 「モデル呼び出しと逆過程の式の分離」の配当)。パリティ: golden は
+  drop_flags=[1,1,0,1,1] 手固定で両分岐を強制、iter0 loss 7 桁一致、final5 二段 tol 83 本
+  フルカバー(ローダは「例外は明示・既定は loud」+カウント釘)、CFG 部分軌道 <1e-4。
+  事前登録「Adam ステップカウンタ per-param(PyTorch) vs global(vol3)」は label_emb の
+  update 欠席で発火予測 → 実測 2.47e-3 は通常重みドリフト帯に埋没(機構実在・検出限界以下、
+  step07 の Adam eps 容疑と同族)。**卒業ラン**: 本構成(60k・batch128・10epoch)を一晩
+  8.1h(6.2 s/iter、毎 epoch save_weights+caffeinate+tee)、loss 0.0633→0.0187 単調。
+  γ=3.0・T=1000 フル CFG 生成(2 回 forward×1000、examples/step10_train/generate.rs、
+  generate は CLI 引数で重みパス+γ 差替可)→ **10 ラベル×4 行の 40 枚全部が指定クラス通り
+  +行ごとに筆致の多様性 = 本の最終図を自作エンジンで再現**。
+  **★ vol5 完走(2026-07-31)。全 10 ステップ+卒業制作。**
+  完走後の考察 2 本: ①暗記チェック — 生成→訓練の NN 距離(中央値 4.77)が訓練同士の間隔
+  (4.32)と同スケール+NN ラベル一致 100% = コピーでなく多様体上の新しい点、と定量証明。
+  ②γ 掃引(0/3/10/20、シード固定でペア比較): クラス内多様性 8.32→6.86→6.52→4.86 の単調減、
+  γ=10 で複雑な字(3・5・8)から順に off-manifold 崩壊、γ=20 で飽和・全面破綻 —
+  「CFG は線形外挿、γ は忠実度で多様性を買い、買いすぎると分布外で破産」を実測。
+  検証速度の実測メモ: matmul スレッド化(ndarray matrixmultiply-threading)は ×1.3 止まり
+  (Amdahl — im2col 等が残る)で不採用・revert 済み。v1.0 の CPU 並列は演算子レベル rayon で。
+- **次フェーズ: フレームワーク v1.0(別リポジトリ、本番ツール化モード)**。スコープ 4 分岐は
+  決着済み(2026-07-30): 完了定義=卒業試験(vol5 golden 4 本を新スタックで green)+CPU 並列、
+  単一クレート開始、API は vol3 継承+負債返済のみ、最初から public。設計の細部・事件簿・
+  要求リストは docs/framework-v1-notes.md が正(GUI=JSON 会話+レジストリ単一正、
+  デバイス切替はストレージレベル抽象、パリティの正は PyTorch 一本、const generics 見送り、
+  HNN・微分可能物理は将来要求として記録済み)。
 - vol2・vol6: 未着手(vol2 は個人的興味の巻として後回し)。

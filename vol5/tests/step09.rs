@@ -1,4 +1,4 @@
-use ndarray::Axis;
+use ndarray::{Array1, Array2, ArrayD, Axis};
 use ndarray_npy::NpzReader;
 use rand::RngExt;
 use rand::SeedableRng;
@@ -24,16 +24,35 @@ fn test_step09_parity() {
     // Diffusion スケジューラの初期化 (ステップ数1000など、ゴールデンと同条件を想定)
     let diffusion = Diffusion::new(1000, 1e-4, 0.02);
     // 1. 初期重みのロード (KEYMAP方式)
-    // BN の running_mean/var も含めて、171個のパラメータが全て同期されます
+    let mut loaded_count = 0;
     for (name, param) in unet.named_params() {
         let key = format!("{}.npy", name);
-        let golden_data: ndarray::ArrayD<f32> = npz.by_name(&key).unwrap();
-        param.set_data(golden_data);
+
+        let golden_res: Result<ndarray::ArrayD<f32>, _> = npz.by_name(&key);
+        match golden_res {
+            Ok(golden_data) => {
+                param.set_data(golden_data);
+                loaded_count += 1;
+            }
+            Err(_) => {
+                // Step 09 ゴールデンには label_emb は存在しない。それ以外の欠損はパニック
+                assert_eq!(
+                    name, "label_emb/W",
+                    "Unexpected missing key in golden npz: {}",
+                    key
+                );
+            }
+        }
     }
-    let x_batch: ndarray::ArrayD<f32> = npz.by_name("x_batch.npy").unwrap(); // (16, 1, 28, 28)
-    let t_seq: ndarray::Array2<f32> = npz.by_name("t_seq.npy").unwrap(); // (5, 16)
-    let noise_seq: ndarray::ArrayD<f32> = npz.by_name("noise_seq.npy").unwrap(); // (5, 16, 1, 28, 28)
-    let loss_seq: ndarray::Array1<f32> = npz.by_name("loss_seq.npy").unwrap(); // (5,)
+    // 釘: Step 09 は総パラメータ83本中、label_emb を除く 82 本をカバーする
+    assert_eq!(
+        loaded_count, 82,
+        "Expected exactly 82 keys loaded from step09_golden.npz"
+    );
+    let x_batch: ArrayD<f32> = npz.by_name("x_batch.npy").unwrap(); // (16, 1, 28, 28)
+    let t_seq: Array2<f32> = npz.by_name("t_seq.npy").unwrap(); // (5, 16)
+    let noise_seq: ArrayD<f32> = npz.by_name("noise_seq.npy").unwrap(); // (5, 16, 1, 28, 28)
+    let loss_seq: Array1<f32> = npz.by_name("loss_seq.npy").unwrap(); // (5,)
     let mut optimizer = Adam::new(1e-3);
     optimizer.setup(&unet);
     // =========================================================================
@@ -61,7 +80,7 @@ fn test_step09_parity() {
         let noise = Variable::new(noise_i.into_dyn());
         let start = Instant::now();
         // 順伝播
-        let noise_pred = unet.forward(&x_t, &t_array);
+        let noise_pred = unet.forward(&x_t, &t_array, None);
         // 【罠回避】 損失の 784 倍罠
         let loss = mean_squared_error(&noise_pred, &noise) / 784.0;
         // 逆伝播
@@ -88,34 +107,49 @@ fn test_step09_parity() {
     // =========================================================================
     // 3. Final 5 重みの検証 (BN の統計量が意図通り育っているか込み)
     // =========================================================================
+    let mut verified_count = 0;
     for (name, param) in unet.named_params() {
         let key = format!("final5/{}.npy", name);
-        let golden_data: ndarray::ArrayD<f32> = npz.by_name(&key).unwrap();
 
-        let max_diff = (&param.data() - &golden_data)
-            .iter()
-            .map(|x| x.abs())
-            .fold(0.0_f32, f32::max);
-        println!("Weight check for '{}': max_diff = {:.6}", name, max_diff);
-        assert!(
-            max_diff < 1e-1,
-            "Weight mismatch for '{}' after 5 iters: max_diff = {}",
-            name,
-            max_diff
-        );
-        // 【重要】 サンプリングテストのため、蓄積した微小な浮動小数点誤差をリセット。
-        // Python 側と完全に同一の final5 重み・BN統計量を注入して以後のパリティを保証する。
-        param.set_data(golden_data);
+        let golden_res: Result<ndarray::ArrayD<f32>, _> = npz.by_name(&key);
+        match golden_res {
+            Ok(golden_data) => {
+                let max_diff = (&param.data() - &golden_data)
+                    .iter()
+                    .map(|x| x.abs())
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    max_diff < 1e-1,
+                    "Weight mismatch for '{}' after 5 iters: max_diff = {}",
+                    name,
+                    max_diff
+                );
+                param.set_data(golden_data);
+                verified_count += 1;
+            }
+            Err(_) => {
+                // ここでも明示的に例外を許可
+                assert_eq!(
+                    name, "label_emb/W",
+                    "Unexpected missing key in final5 npz: {}",
+                    key
+                );
+            }
+        }
     }
-
+    // 釘: final5 も同様に 82 本の重み検証と再ロードが行われたか
+    assert_eq!(
+        verified_count, 82,
+        "Expected exactly 82 keys verified and reloaded in final5"
+    );
     // =========================================================================
     // 4. サンプリング部分軌道の検証 (eval 分岐のテスト)
     // =========================================================================
 
     {
         let _guard = vol3::config::test_mode();
-        let mut x_sample: ndarray::ArrayD<f32> = npz.by_name("x_start.npy").unwrap();
-        let z_seq: ndarray::ArrayD<f32> = npz.by_name("z_seq.npy").unwrap();
+        let mut x_sample: ArrayD<f32> = npz.by_name("x_start.npy").unwrap();
+        let z_seq: ArrayD<f32> = npz.by_name("z_seq.npy").unwrap();
         // ★ バッチサイズを x_start から動的に取得
         let n_samples = x_sample.shape()[0];
         // 10 -> 1 のデノイズ
@@ -123,15 +157,15 @@ fn test_step09_parity() {
             let z_data = z_seq.index_axis(Axis(0), 10 - t_step).to_owned();
 
             // ★ ハードコードの 16 を n_samples に変更
-            let t_array = ndarray::Array1::from_elem(n_samples, t_step as f32);
+            let t_array = Array1::from_elem(n_samples, t_step as f32);
 
             let x_var = Variable::new(x_sample.clone());
-            let eps_hat_var = unet.forward(&x_var, &t_array);
+            let eps_hat_var = unet.forward(&x_var, &t_array, None);
             let eps_hat = eps_hat_var.data();
             let z_opt = if t_step == 1 { None } else { Some(&z_data) };
             x_sample = diffusion.denoise_with_noise(&x_sample, &eps_hat, t_step, z_opt);
         }
-        let x_after10: ndarray::ArrayD<f32> = npz.by_name("x_after10.npy").unwrap();
+        let x_after10: ArrayD<f32> = npz.by_name("x_after10.npy").unwrap();
         let max_diff_x = (&x_sample - &x_after10)
             .iter()
             .map(|x| x.abs())
@@ -152,11 +186,31 @@ fn test_step09_tier3_statistical() {
     let unet = UNet::new(1, 100, &mut rng);
     let mut npz = NpzReader::new(File::open("dataset/step09_golden.npz").unwrap()).unwrap();
 
+    let mut loaded_count = 0;
     for (name, param) in unet.named_params() {
         let key = format!("{}.npy", name);
-        let golden_data: ndarray::ArrayD<f32> = npz.by_name(&key).unwrap();
-        param.set_data(golden_data);
+
+        let golden_res: Result<ndarray::ArrayD<f32>, _> = npz.by_name(&key);
+        match golden_res {
+            Ok(golden_data) => {
+                param.set_data(golden_data);
+                loaded_count += 1;
+            }
+            Err(_) => {
+                // Step 09 ゴールデンには label_emb は存在しない。それ以外の欠損はパニック
+                assert_eq!(
+                    name, "label_emb/W",
+                    "Unexpected missing key in golden npz: {}",
+                    key
+                );
+            }
+        }
     }
+    // 釘: Step 09 は総パラメータ83本中、label_emb を除く 82 本をカバーする
+    assert_eq!(
+        loaded_count, 82,
+        "Expected exactly 82 keys loaded from step09_golden.npz"
+    );
 
     // 2. MNIST 先頭 1024 枚をロード (正規化込み)
     let mut bytes = Vec::new();
@@ -199,7 +253,7 @@ fn test_step09_tier3_statistical() {
             }
             let x_batch = ndarray::stack(Axis(0), &batch_views).unwrap();
 
-            let mut t_array = ndarray::Array1::<f32>::zeros(b_size);
+            let mut t_array = Array1::<f32>::zeros(b_size);
             let mut x_t_singles = Vec::new();
             let mut noise_singles = Vec::new();
 
@@ -231,7 +285,7 @@ fn test_step09_tier3_statistical() {
             let noise = Variable::new(noise_data.into_dyn());
 
             // 順伝播・損失計算
-            let noise_pred = unet.forward(&x_t, &t_array);
+            let noise_pred = unet.forward(&x_t, &t_array, None);
             let loss = mean_squared_error(&noise_pred, &noise) / 784.0;
 
             unet.cleargrads();
@@ -250,7 +304,7 @@ fn test_step09_tier3_statistical() {
     // 4. アサーション (Golden カーブに基づく統計的パリティ)
     let mut curve_npz =
         NpzReader::new(File::open("dataset/step09_tier3_curve.npz").unwrap()).unwrap();
-    let golden_curve: ndarray::Array1<f32> = curve_npz.by_name("epoch_losses.npy").unwrap();
+    let golden_curve: Array1<f32> = curve_npz.by_name("epoch_losses.npy").unwrap();
     let final_loss = epoch_losses[4];
     let expected_final = golden_curve[4]; // (例: 0.0596)
 
